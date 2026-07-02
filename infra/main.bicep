@@ -24,6 +24,13 @@ param foundryResourceOverride string = ''
 @description('Email address the app escalates calls to.')
 param escalationEmail string = ''
 
+@description('ACS verified sender address for escalation emails (e.g. DoNotReply@<guid>.azurecomm.net).')
+param acsEmailSender string = ''
+
+@description('ACS connection string used to send escalation emails. Stored as a Container App secret.')
+@secure()
+param acsEmailConnectionString string = ''
+
 var tags = { 'azd-env-name': environmentName }
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
 
@@ -45,6 +52,8 @@ module resources 'resources.bicep' = {
     byomProfile: byomProfile
     foundryResourceOverride: foundryResourceOverride
     escalationEmail: escalationEmail
+    acsEmailSender: acsEmailSender
+    acsEmailConnectionString: acsEmailConnectionString
   }
 }
 

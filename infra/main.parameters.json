@@ -22,6 +22,12 @@
     },
     "escalationEmail": {
       "value": "${ESCALATION_EMAIL}"
+    },
+    "acsEmailSender": {
+      "value": "${ACS_EMAIL_SENDER}"
+    },
+    "acsEmailConnectionString": {
+      "value": "${ACS_EMAIL_CONNECTION_STRING}"
     }
   }
 }

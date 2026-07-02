@@ -12,6 +12,10 @@ param voiceLiveModel string
 param byomProfile string
 param foundryResourceOverride string
 param escalationEmail string
+param acsEmailSender string = ''
+
+@secure()
+param acsEmailConnectionString string = ''
 
 var prefix = 'oc'
 
@@ -86,6 +90,13 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: containerEnv.id
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: [
+        {
+          name: 'acs-email-connection-string'
+          // Container Apps rejects empty secret values; use a placeholder when unset.
+          value: empty(acsEmailConnectionString) ? 'unset' : acsEmailConnectionString
+        }
+      ]
       ingress: {
         external: true
         targetPort: 8000
@@ -133,6 +144,14 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'ESCALATION_EMAIL'
               value: escalationEmail
+            }
+            {
+              name: 'ACS_EMAIL_SENDER'
+              value: acsEmailSender
+            }
+            {
+              name: 'ACS_EMAIL_CONNECTION_STRING'
+              secretRef: 'acs-email-connection-string'
             }
             {
               name: 'AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID'
