@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: outbound-calls
+metadata:
+  template: outbound-calls@0.1.0
+services:
+  web:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .

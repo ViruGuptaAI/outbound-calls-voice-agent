@@ -1,0 +1,34 @@
+# Git / IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Local env & secrets (MUST NOT be baked into the image — would override Container App env)
+.env
+*.env
+!.env.sample
+server/.env
+
+# Local DB (rebuilt in the image via seed_db.py)
+*.db
+server/crm.db
+
+# Runtime artifacts
+server/outbox/
+server/escalations/
+
+# Azure / deployment
+.azure/
+infra/
+
+# Docs
+*.md
