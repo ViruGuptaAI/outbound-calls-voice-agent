@@ -495,6 +495,11 @@ class VoiceLiveSession:
         # ── Call termination state ────────────────────────────────────────────
         self._call_ended: bool = False  # True once we've begun tearing the call down
         self._pending_end_call: bool = False  # agent asked to hang up; fire on response.done
+        # True when the hang-up was requested explicitly (end_call / escalate_to_human)
+        # rather than by the idle watchdog. An explicit hang-up is committed: a customer
+        # barge-in during the farewell must NOT keep the call alive (they already agreed
+        # to end), whereas an idle goodbye IS cancellable (the customer came back).
+        self._end_call_explicit: bool = False
         self._end_call_reason: str = ""  # reason string for the hang-up
         self._user_speaking: bool = False  # True between speech_started and speech_stopped
         self._last_user_activity_ts: float = time.monotonic()  # last customer speech/turn
@@ -672,7 +677,9 @@ class VoiceLiveSession:
                         # scheduled hang-up so we NEVER end the call mid-utterance.
                         self._user_speaking = True
                         self._last_user_activity_ts = time.monotonic()
-                        if self._pending_end_call:
+                        if self._pending_end_call and not self._end_call_explicit:
+                            # Idle-triggered goodbye only: the customer came back
+                            # after silence, so keep the line open.
                             logger.info(
                                 "[%s] Customer resumed speaking — cancelling scheduled call end",
                                 self._call_id,
@@ -837,8 +844,15 @@ class VoiceLiveSession:
                         self._last_user_activity_ts = time.monotonic()
                         # ── Graceful termination: agent finished its farewell ──
                         if self._pending_end_call:
-                            if status == "completed":
+                            if status == "completed" or self._end_call_explicit:
+                                # Terminate when the farewell finishes cleanly, OR
+                                # whenever the hang-up was explicit (end_call /
+                                # escalate_to_human) — even if the customer barged in
+                                # and cut the farewell short. They already agreed to
+                                # end, so a reply like "bye / cut the call" must not
+                                # keep the line open.
                                 self._pending_end_call = False
+                                self._end_call_explicit = False
                                 logger.info(
                                     "[%s] Farewell delivered — terminating call",
                                     self._call_id,
@@ -849,8 +863,8 @@ class VoiceLiveSession:
                                     )
                                 )
                                 continue
-                            # Response was cancelled/failed (e.g. customer barged in) —
-                            # drop the pending hang-up and carry on normally.
+                            # Idle goodbye that was cancelled/failed (e.g. the customer
+                            # came back and barged in) — drop the hang-up, carry on.
                             self._pending_end_call = False
                         if status == "cancelled":
                             details = resp.get("status_details", {})
@@ -1070,6 +1084,7 @@ class VoiceLiveSession:
                 args = {}
             self._end_call_reason = args.get("reason") or "Call ended."
             self._pending_end_call = True
+            self._end_call_explicit = True  # committed hang-up — barge-in won't cancel it
             logger.info(
                 "[%s] 📞 end_call requested (reason=%s) — hanging up after farewell",
                 self._call_id, self._end_call_reason,
@@ -1139,6 +1154,7 @@ class VoiceLiveSession:
 
             # Schedule the graceful hang-up (fires after the spoken confirmation)
             self._pending_end_call = True
+            self._end_call_explicit = True  # committed hang-up — barge-in won't cancel it
             self._end_call_reason = (
                 f"Escalated to a human agent — ticket {ref}." if ref
                 else "Escalated to a human agent."
@@ -1309,8 +1325,10 @@ class VoiceLiveSession:
                     self._call_id, idle,
                 )
                 # Ask the agent to say a brief goodbye; termination fires on
-                # response.done via the _pending_end_call path.
+                # response.done via the _pending_end_call path. This goodbye IS
+                # cancellable — if the customer comes back and speaks, keep going.
                 self._pending_end_call = True
+                self._end_call_explicit = False
                 self._end_call_reason = "No response from the customer."
                 await self._send_json({
                     "type": "conversation.item.create",
