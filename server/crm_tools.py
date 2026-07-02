@@ -1275,17 +1275,72 @@ def _write_outbox(to_addr: str, subject: str, body: str, error: str = "") -> Pat
     return path
 
 
+def _deliver_via_acs(to_addr: str, subject: str, body: str) -> str:
+    """
+    Send an email through Azure Communication Services (ACS) Email.
+
+    Auth priority mirrors the rest of the app:
+      1. ACS_EMAIL_CONNECTION_STRING  (endpoint=...;accesskey=...)
+      2. ACS_EMAIL_ENDPOINT + Managed Identity / Azure CLI credential
+    The verified MailFrom address must be set in ACS_EMAIL_SENDER
+    (e.g. DoNotReply@<guid>.azurecomm.net or notify@yourdomain.com).
+
+    Raises on any failure so the caller can fall back to SMTP / outbox.
+    """
+    from azure.communication.email import EmailClient  # lazy import
+
+    sender = os.getenv("ACS_EMAIL_SENDER", "").strip()
+    conn = os.getenv("ACS_EMAIL_CONNECTION_STRING", "").strip()
+    endpoint = os.getenv("ACS_EMAIL_ENDPOINT", "").strip()
+
+    if conn:
+        client = EmailClient.from_connection_string(conn)
+    else:
+        from azure.identity import DefaultAzureCredential  # lazy import
+
+        client = EmailClient(endpoint, DefaultAzureCredential())
+
+    message = {
+        "senderAddress": sender,
+        "recipients": {"to": [{"address": to_addr}]},
+        "content": {"subject": subject, "plainText": body},
+    }
+    poller = client.begin_send(message)
+    result = poller.result()
+    status = getattr(result, "status", None) or (
+        result.get("status") if isinstance(result, dict) else None
+    )
+    msg_id = getattr(result, "id", None) or (
+        result.get("id") if isinstance(result, dict) else None
+    )
+    return f"sent via ACS (status={status}, id={msg_id})"
+
+
 def _deliver_email(to_addr: str, subject: str, body: str) -> str:
     """
-    Send an email via SMTP if SMTP_HOST is configured; otherwise write it to the
-    local outbox/ folder (simulated handoff). Returns a delivery status string.
-    Never raises — a failed send falls back to the outbox so the handoff is
-    never silently lost.
+    Deliver an escalation email using the first configured backend:
+      1. Azure Communication Services  (ACS_EMAIL_SENDER + connection string/endpoint)
+      2. SMTP                          (SMTP_HOST)
+      3. Simulated outbox              (server/outbox/*.txt)
+    Returns a delivery status string. Never raises — a failed send falls back to
+    the outbox so the handoff is never silently lost.
     """
+    # ── 1. Azure Communication Services ──
+    acs_sender = os.getenv("ACS_EMAIL_SENDER", "").strip()
+    acs_conn = os.getenv("ACS_EMAIL_CONNECTION_STRING", "").strip()
+    acs_endpoint = os.getenv("ACS_EMAIL_ENDPOINT", "").strip()
+    if acs_sender and (acs_conn or acs_endpoint):
+        try:
+            return _deliver_via_acs(to_addr, subject, body)
+        except Exception as exc:
+            path = _write_outbox(to_addr, subject, body, error=f"ACS: {exc}")
+            return f"acs_error, written to outbox {path} ({exc})"
+
+    # ── 2. SMTP ──
     host = os.getenv("SMTP_HOST", "").strip()
     if not host:
         path = _write_outbox(to_addr, subject, body)
-        return f"simulated (no SMTP configured) — written to {path}"
+        return f"simulated (no ACS/SMTP configured) — written to {path}"
     try:
         msg = EmailMessage()
         msg["From"] = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@contosobank.example"))
