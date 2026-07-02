@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Contoso Bank — Outbound Call</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header>
+        <div class="logo" style="cursor:pointer" onclick="window.location.href='/'">
+            <div class="logo-icon">CB</div>
+            <div>
+                <h1>Contoso Bank</h1>
+                <p>Outbound Call</p>
+            </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.75rem;z-index:1;">
+            <div class="speaking-indicator" id="speaking-indicator">
+                <div class="speaking-waves">
+                    <div class="speaking-bar"></div>
+                    <div class="speaking-bar"></div>
+                    <div class="speaking-bar"></div>
+                    <div class="speaking-bar"></div>
+                </div>
+                <span id="speaking-label">Agent Speaking</span>
+            </div>
+            <div class="header-badge">🔒 Powered by Azure Voice Live API</div>
+            <a href="/" style="color:rgba(255,255,255,0.8);text-decoration:none;font-size:0.75rem;padding:0.35rem 0.7rem;border:1px solid rgba(255,255,255,0.2);border-radius:6px;z-index:1;">← New Call</a>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="call-card" id="call-card">
+                <div class="call-card-icon" id="call-icon">📞</div>
+                <div class="call-card-campaign" id="call-campaign">Campaign</div>
+                <div class="call-card-agent" id="call-agent">Agent</div>
+            </div>
+
+            <div class="status-panel">
+                <h3>Customer</h3>
+                <div class="status-item">
+                    <span>Name</span>
+                    <span class="status-value" id="cust-name">—</span>
+                </div>
+                <div class="status-item">
+                    <span>Role</span>
+                    <span class="status-value">You (role-play)</span>
+                </div>
+            </div>
+
+            <div class="status-panel">
+                <h3>Call Info</h3>
+                <div class="status-item">
+                    <span>Status</span>
+                    <span class="status-value disconnected" id="conn-status">Not started</span>
+                </div>
+                <div class="status-item">
+                    <span>Agent</span>
+                    <span class="status-value" id="current-agent-label">—</span>
+                </div>
+                <div class="status-item">
+                    <span>Duration</span>
+                    <span class="status-value" id="call-duration">0:00</span>
+                </div>
+            </div>
+
+            <div class="status-panel roleplay-note">
+                <h3>How this works</h3>
+                <p>You are role-playing the <b>customer</b> being called. Speak into your
+                   mic and respond naturally — the agent has already dialed out and will
+                   lead the conversation.</p>
+            </div>
+        </div>
+
+        <!-- Chat area -->
+        <div class="chat-area">
+            <div class="chat-header">
+                <h2>
+                    <span>📞 Live Call</span>
+                    <span class="current-agent-badge" id="agent-badge">Agent</span>
+                </h2>
+                <div class="visualizer-container" id="visualizer"></div>
+            </div>
+
+            <div class="chat-messages" id="messages">
+                <div class="message system">
+                    Click "Start Call" — the agent will dial out and begin speaking.
+                </div>
+            </div>
+
+            <div class="controls">
+                <button class="btn btn-start" id="btn-start" onclick="startConversation()">
+                    📞 Start Call
+                </button>
+                <button class="btn btn-stop" id="btn-stop" onclick="stopConversation()" disabled>
+                    ⏹️ End Call
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        Contoso Bank Outbound Calling Demo &nbsp;·&nbsp; Powered by Azure AI Voice Live API
+        <br>Built with <span style="color:#e74c3c">&hearts;</span> by Viru Gupta
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+quart>=0.20
+websockets>=13.0
+azure-identity>=1.17
+aiohttp>=3.9
+python-dotenv>=1.0

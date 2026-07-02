@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Contoso Bank — Outbound Calling Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <div class="logo-icon">CB</div>
+            <div>
+                <h1>Contoso Bank</h1>
+                <p>Outbound Calling Console</p>
+            </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.75rem;z-index:1;">
+            <div class="header-badge">🔒 Powered by Azure Voice Live API</div>
+        </div>
+    </header>
+
+    <main class="console">
+        <section class="console-intro">
+            <h2>Launch an outbound call</h2>
+            <p>Pick a campaign, choose the customer to reach, then start the call. The
+               AI agent will dial out, introduce itself, and drive the conversation
+               toward the campaign goal.</p>
+        </section>
+
+        <section class="console-step">
+            <div class="step-heading"><span class="step-num">1</span> Choose a campaign</div>
+            <div class="campaign-grid" id="campaign-grid">
+                <div class="campaign-loading">Loading campaigns…</div>
+            </div>
+        </section>
+
+        <section class="console-step">
+            <div class="step-heading"><span class="step-num">2</span> Choose the customer to call</div>
+            <div class="customer-picker">
+                <select id="customer-select" class="customer-select">
+                    <option value="">Loading customers…</option>
+                </select>
+                <div class="customer-detail" id="customer-detail"></div>
+            </div>
+        </section>
+
+        <section class="console-launch">
+            <button class="btn btn-start btn-launch" id="btn-launch" disabled>
+                📞 Start Call
+            </button>
+            <div class="launch-hint" id="launch-hint">Select a campaign and a customer to continue.</div>
+        </section>
+    </main>
+
+    <footer>
+        Contoso Bank Outbound Calling Demo &nbsp;·&nbsp; Powered by Azure AI Voice Live API
+        <br>Built with <span style="color:#e74c3c">&hearts;</span> by Viru Gupta
+    </footer>
+
+    <script src="/static/console.js"></script>
+</body>
+</html>
