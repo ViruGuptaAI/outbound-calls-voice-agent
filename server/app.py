@@ -25,6 +25,7 @@ if _server_dir not in sys.path:
     sys.path.insert(0, _server_dir)
 
 from campaigns import CAMPAIGN_REGISTRY, get_campaign, DEFAULT_CAMPAIGN  # noqa: E402
+from campaigns.tool_schemas import END_CALL, ESCALATE_TO_HUMAN  # noqa: E402
 from crm_tools import TOOL_FUNCTIONS  # noqa: E402
 from playbooks import get_playbook  # noqa: E402
 
@@ -47,6 +48,12 @@ FOUNDRY_RESOURCE_OVERRIDE = os.getenv("FOUNDRY_RESOURCE_OVERRIDE", "")
 # ── Conversation summarization (token optimization for long calls) ───────────
 SUMMARY_EVERY_N_TURNS = int(os.getenv("SUMMARY_EVERY_N_TURNS", "18"))
 SUMMARY_KEEP_RECENT = int(os.getenv("SUMMARY_KEEP_RECENT", "6"))
+
+# ── Call termination ─────────────────────────────────────────────────────────
+# Hang up the call automatically if the customer stays silent this long.
+IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "60"))
+# How often the idle monitor wakes up to check for silence.
+IDLE_CHECK_INTERVAL_SECONDS = 2
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -75,7 +82,8 @@ _TOOL_NAMES_FOR_REDACTION = [
     "get_savings_transactions", "get_fd_rate_card", "get_debit_card_details",
     "get_investments", "get_all_transactions", "play_hold_music",
     "get_card_dues", "get_payment_history", "get_settlement_options",
-    "record_payment_commitment", "send_payment_link",
+    "record_payment_commitment", "send_payment_link", "end_call",
+    "escalate_to_human",
 ]
 _TOOL_NAME_PATTERN = _re.compile(
     r"\b(?:" + "|".join(_re.escape(n) for n in _TOOL_NAMES_FOR_REDACTION) + r")\b",
@@ -212,6 +220,51 @@ def build_session_config(
         "This applies to every Hindi turn, including after tool results.\n"
     )
 
+    # Universal call-ending etiquette — how and WHEN to hang up gracefully.
+    instructions += (
+        "\n\n# ENDING THE CALL — ALWAYS ASK PERMISSION FIRST\n"
+        "- When the conversation is genuinely concluded (goal met, promise-to-pay recorded, "
+        "question fully answered, or the customer clearly wants to go), do NOT hang up "
+        "silently. FIRST ask permission to end — e.g. 'Is there anything else I can help you "
+        "with, or shall I let you go?' or 'If there's nothing else, may I end the call here?'\n"
+        "- ONLY after the customer confirms they have nothing else (a clear 'no / that's all / "
+        "you can end it / thanks, bye'), call the `end_call` tool. In the SAME turn, first say "
+        "a short warm farewell (e.g. 'Thank you for your time, {name} — take care, goodbye.'), "
+        "then call `end_call`. The call ends automatically once you finish that farewell.\n"
+        "- NEVER call `end_call` while the customer still has a question, is mid-sentence, is "
+        "asking for more, or has not agreed to end. When in doubt, ask — do NOT hang up.\n"
+        "- If the customer says something new or asks another question after you've asked to "
+        "end, DROP the idea of ending and keep helping them.\n"
+    )
+
+    # Universal human-escalation etiquette — when and how to hand off to a person.
+    instructions += (
+        "\n\n# ESCALATING TO A HUMAN AGENT\n"
+        "- Escalate to a human senior officer with the `escalate_to_human` tool when ANY of "
+        "these are true: the customer is clearly frustrated/angry or negotiating unreasonably "
+        "and you cannot satisfy them within your authority; the customer explicitly asks for a "
+        "human or a senior person; or a human is genuinely required to proceed. Do this rather "
+        "than repeating the same refusal over and over — if you've tried a few times and the "
+        "customer is still not satisfied, offer to escalate.\n"
+        "- ALWAYS confirm briefly BEFORE escalating — e.g. 'I'll escalate this to a senior "
+        "officer who will call you back — is that okay?'. Only call the tool once they agree "
+        "(or clearly demand a human).\n"
+        "- When you call `escalate_to_human`, in the SAME turn tell the customer: 'I've noted "
+        "your request and I'm escalating this to a human agent who will call you back shortly.' "
+        "Then STOP — the call ends automatically. Do NOT promise any specific outcome the human "
+        "has not approved.\n"
+        "- ALSO use `escalate_to_human` with escalation_type='resolved_handoff' at the END of a "
+        "SUCCESSFULLY resolved call when a human must action the next steps (e.g. process a "
+        "disbursal, verify documents, honour a recorded promise-to-pay). In that case thank the "
+        "customer warmly and say you've passed the details to the team for follow-up.\n"
+        "- Provide a clear `summary` and concrete `action_items` (next steps) whenever you "
+        "escalate — this is what the human agent receives.\n"
+        "- FIELD DISCIPLINE: `reason` is a short human-readable sentence explaining WHY you "
+        "are handing off (e.g. 'Customer accepted the offer; application needs a human to "
+        "complete disbursal.'). It is NOT a category — NEVER put 'resolved_handoff' or "
+        "'unresolved' in `reason`; those values belong ONLY in `escalation_type`.\n"
+    )
+
     # Inject customer name as context (the opening line is handled by response.create)
     if customer_name:
         first_name = customer_name.split()[0]
@@ -308,10 +361,17 @@ def build_session_config(
         if playbook_tool_names is not None:
             tools = [t for t in campaign["tools"] if t["name"] in playbook_tool_names]
         else:
-            tools = campaign["tools"]
-        if tools:
-            config["session"]["tools"] = tools
-            config["session"]["tool_choice"] = "auto"
+            tools = list(campaign["tools"])
+    else:
+        tools = []
+    # `end_call` is universal — every agent can gracefully hang up the call.
+    if not any(t.get("name") == "end_call" for t in tools):
+        tools.append(END_CALL)
+    # `escalate_to_human` is universal — every agent can hand off to a human.
+    if not any(t.get("name") == "escalate_to_human" for t in tools):
+        tools.append(ESCALATE_TO_HUMAN)
+    config["session"]["tools"] = tools
+    config["session"]["tool_choice"] = "auto"
 
     return config
 
@@ -432,6 +492,13 @@ class VoiceLiveSession:
         self._response_audio_bytes: int = 0  # audio bytes sent in current response
         self._response_truncated: bool = False  # set when truncated fires before transcript.done
         self._truncation_audio_end_ms: int = 0  # audio_end_ms from the truncation event
+        # ── Call termination state ────────────────────────────────────────────
+        self._call_ended: bool = False  # True once we've begun tearing the call down
+        self._pending_end_call: bool = False  # agent asked to hang up; fire on response.done
+        self._end_call_reason: str = ""  # reason string for the hang-up
+        self._user_speaking: bool = False  # True between speech_started and speech_stopped
+        self._last_user_activity_ts: float = time.monotonic()  # last customer speech/turn
+        self._idle_monitor: asyncio.Task | None = None  # silence-timeout watchdog
 
     # ── 1. Connect to Voice Live ─────────────────────────────────────────
 
@@ -514,11 +581,16 @@ class VoiceLiveSession:
         asyncio.create_task(self._receiver_loop())
         asyncio.create_task(self._sender_loop())
         asyncio.create_task(self._heartbeat_loop())
+        # Start the silence watchdog — auto-ends the call if the customer goes quiet.
+        self._last_user_activity_ts = time.monotonic()
+        self._idle_monitor = asyncio.create_task(self._idle_monitor_loop())
 
     # ── 2. Browser → Voice Live (sender) ─────────────────────────────────
 
     async def handle_browser_audio(self, raw_pcm: bytes):
         """Queue raw PCM16 audio from the browser for Voice Live."""
+        if self._call_ended:
+            return
         audio_b64 = base64.b64encode(raw_pcm).decode("ascii")
         await self._send_queue.put(
             json.dumps({
@@ -596,11 +668,23 @@ class VoiceLiveSession:
 
                     # ── User speech events ────────────────────────────────
                     case "input_audio_buffer.speech_started":
+                        # The customer is speaking — record activity and clear any
+                        # scheduled hang-up so we NEVER end the call mid-utterance.
+                        self._user_speaking = True
+                        self._last_user_activity_ts = time.monotonic()
+                        if self._pending_end_call:
+                            logger.info(
+                                "[%s] Customer resumed speaking — cancelling scheduled call end",
+                                self._call_id,
+                            )
+                            self._pending_end_call = False
                         await self._send_to_browser(
                             json.dumps({"Kind": "StopAudio"})
                         )
 
                     case "input_audio_buffer.speech_stopped":
+                        self._user_speaking = False
+                        self._last_user_activity_ts = time.monotonic()
                         self._user_speech_end_ts = time.monotonic()
                         self._first_audio_latency_logged = False
                         self._last_transcription_empty = True  # assume empty until transcription proves otherwise
@@ -620,6 +704,7 @@ class VoiceLiveSession:
                         if transcript.strip():
                             self._last_transcription_empty = False
                             self._user_turn_count += 1
+                            self._last_user_activity_ts = time.monotonic()
                             self._transcript_log.append(("user", transcript.strip()))
                         logger.info(
                             "[%s] USER [lang=%s]: %s",
@@ -747,6 +832,26 @@ class VoiceLiveSession:
                         self._response_active = False
                         resp = event.get("response", {})
                         status = resp.get("status")
+                        # Reset the idle clock — the agent just finished, so start
+                        # counting the customer's silence from now.
+                        self._last_user_activity_ts = time.monotonic()
+                        # ── Graceful termination: agent finished its farewell ──
+                        if self._pending_end_call:
+                            if status == "completed":
+                                self._pending_end_call = False
+                                logger.info(
+                                    "[%s] Farewell delivered — terminating call",
+                                    self._call_id,
+                                )
+                                asyncio.create_task(
+                                    self._terminate_call(
+                                        self._end_call_reason or "Call ended."
+                                    )
+                                )
+                                continue
+                            # Response was cancelled/failed (e.g. customer barged in) —
+                            # drop the pending hang-up and carry on normally.
+                            self._pending_end_call = False
                         if status == "cancelled":
                             details = resp.get("status_details", {})
                             logger.info(
@@ -952,6 +1057,120 @@ class VoiceLiveSession:
             # its current response (saying "please hold"), then music
             # plays on response.done, then we trigger a new response.
 
+        elif fn_name == "end_call":
+            # ── Graceful hang-up — DEFERRED until the farewell finishes ──
+            # The model says a short goodbye as audio in the SAME response.
+            # We defer the actual teardown to response.done so the farewell
+            # plays fully before the line drops. If the customer barges in
+            # before then, speech_started clears _pending_end_call (no
+            # false-positive hang-up).
+            try:
+                args = json.loads(args_str) if args_str.strip() else {}
+            except json.JSONDecodeError:
+                args = {}
+            self._end_call_reason = args.get("reason") or "Call ended."
+            self._pending_end_call = True
+            logger.info(
+                "[%s] 📞 end_call requested (reason=%s) — hanging up after farewell",
+                self._call_id, self._end_call_reason,
+            )
+            # Ack the tool so the model finishes its farewell in this response.
+            await self._send_json({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps({
+                        "status": "ending_call",
+                        "message": "Acknowledged. Finish your short spoken farewell NOW in the "
+                                   "customer's language. The call ends automatically once you "
+                                   "finish. Do NOT ask any further questions.",
+                    }),
+                },
+            })
+            # Do NOT trigger response.create — the current farewell response
+            # completes on its own, and termination fires on response.done.
+
+        elif fn_name == "escalate_to_human":
+            # ── Hand the call off to a human agent (email) then hang up ──
+            # Sends a summary + action items + transcript to the human agent,
+            # shows an escalation banner in the browser, then ends the call
+            # via the same deferred-farewell path as end_call.
+            try:
+                args = json.loads(args_str) if args_str.strip() else {}
+            except json.JSONDecodeError:
+                args = {}
+            from crm_tools import send_escalation
+
+            esc_type = args.get("escalation_type", "unresolved")
+            reason = args.get("reason", "")
+            try:
+                result = send_escalation(
+                    customer_id=self._customer_id,
+                    campaign=get_campaign(self._campaign_key).get("title", self._campaign_key),
+                    agent=self._agent_name,
+                    reason=reason,
+                    summary=args.get("summary", ""),
+                    action_items=args.get("action_items"),
+                    priority=args.get("priority", "medium"),
+                    escalation_type=esc_type,
+                    transcript=list(self._transcript_log),
+                )
+            except Exception as exc:
+                logger.exception("[%s] Escalation failed", self._call_id)
+                result = {"error": str(exc), "reference": "", "priority": "medium"}
+
+            ref = result.get("reference", "")
+            logger.info(
+                "[%s] 🚨 Escalation (%s) → %s | ticket=%s | delivery=%s",
+                self._call_id, esc_type, result.get("email_to", ""),
+                ref, result.get("delivery", ""),
+            )
+
+            # Escalation banner for the browser UI
+            await self._send_to_browser(json.dumps({
+                "Kind": "Escalation",
+                "Ticket": ref,
+                "Reason": reason,
+                "Priority": result.get("priority", "medium"),
+                "Type": esc_type,
+                "EmailTo": result.get("email_to", ""),
+            }))
+
+            # Schedule the graceful hang-up (fires after the spoken confirmation)
+            self._pending_end_call = True
+            self._end_call_reason = (
+                f"Escalated to a human agent — ticket {ref}." if ref
+                else "Escalated to a human agent."
+            )
+
+            if esc_type == "resolved_handoff":
+                spoken = (
+                    "Warmly thank the customer and tell them you've passed a summary and the "
+                    "next steps to the team who will follow up. "
+                )
+            else:
+                spoken = (
+                    "Tell the customer: 'I've noted your request and I'm escalating this to a "
+                    "human agent who will call you back shortly.' "
+                )
+            await self._send_json({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps({
+                        "status": "escalated",
+                        "reference": ref,
+                        "message": spoken + "Say it in the customer's language, then STOP. The "
+                                   "call ends automatically once you finish. Do NOT promise any "
+                                   "specific outcome or ask further questions.",
+                    }),
+                },
+            })
+            # Do NOT trigger response.create — the current response finishes
+            # with the spoken confirmation; termination fires on response.done.
+
         elif fn_name in TOOL_FUNCTIONS:
             # ── CRM data tool call ───────────────────────────────────────
             try:
@@ -1055,6 +1274,96 @@ class VoiceLiveSession:
             pass
         except Exception:
             pass
+
+    async def _idle_monitor_loop(self):
+        """
+        End the call gracefully if the customer stays silent past the timeout.
+
+        False-positive guards (a hang-up while the user is talking is very bad):
+          • never fire while the AGENT is speaking (a response is active)
+          • never fire while the CUSTOMER is speaking (between speech_started/stopped)
+          • never fire if a hang-up is already scheduled
+          • re-check the speaking flag right before triggering
+        The idle clock is reset on every customer utterance and whenever the
+        agent finishes a response, so it only counts genuine dead air.
+        """
+        try:
+            while not self._call_ended:
+                await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS)
+                if self._call_ended:
+                    break
+                if (
+                    self._response_active
+                    or self._user_speaking
+                    or self._pending_end_call
+                ):
+                    continue
+                idle = time.monotonic() - self._last_user_activity_ts
+                if idle < IDLE_TIMEOUT_SECONDS:
+                    continue
+                # Final guard: make sure the customer isn't mid-utterance right now.
+                if self._user_speaking or self._response_active:
+                    continue
+                logger.info(
+                    "[%s] ⏳ Customer silent for %.0fs — ending call gracefully",
+                    self._call_id, idle,
+                )
+                # Ask the agent to say a brief goodbye; termination fires on
+                # response.done via the _pending_end_call path.
+                self._pending_end_call = True
+                self._end_call_reason = "No response from the customer."
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_text",
+                            "text": (
+                                "[System: The customer has been silent for a while and may have "
+                                "stepped away. In the customer's language, briefly and warmly say "
+                                "you'll let them go for now and they're welcome to call back "
+                                "anytime, then STOP. Do NOT ask another question.]"
+                            ),
+                        }],
+                    },
+                })
+                await self._safe_response_create()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("[%s] Idle monitor error", self._call_id)
+
+    async def _terminate_call(self, reason: str):
+        """
+        Tear the call down: let the farewell audio drain, tell the browser to
+        end, then close the Voice Live socket. Idempotent.
+        """
+        if self._call_ended:
+            return
+        self._call_ended = True
+        # Estimate how long the farewell audio takes to finish playing in the
+        # browser (PCM16 @ 24kHz → 48000 bytes/sec) and hold that long so we
+        # don't cut off the goodbye.
+        playback_s = self._response_audio_bytes / 48000 if self._response_audio_bytes else 0
+        grace_s = min(max(playback_s + 0.7, 1.5), 15)
+        grace_ms = int(grace_s * 1000)
+        logger.info(
+            "[%s] 📞 Ending call — reason: %s (grace %.1fs)",
+            self._call_id, reason, grace_s,
+        )
+        await self._send_to_browser(
+            json.dumps({"Kind": "EndCall", "Reason": reason, "GraceMs": grace_ms})
+        )
+        # Stop the idle watchdog if it's still running.
+        if self._idle_monitor and not self._idle_monitor.done():
+            self._idle_monitor.cancel()
+        await asyncio.sleep(grace_s)
+        if self.vl_ws:
+            try:
+                await self.vl_ws.close()
+            except Exception:
+                pass
 
     async def _send_json(self, obj: dict):
         if self.vl_ws:

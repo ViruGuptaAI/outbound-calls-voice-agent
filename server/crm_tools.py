@@ -3,10 +3,17 @@ CRM Tools — SQLite query functions for Voice Live function calling.
 Each function takes a customer_id and returns a JSON-serializable dict.
 """
 
+import os
+import re
+import smtplib
 import sqlite3
+from email.message import EmailMessage
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "crm.db"
+
+# Human agent who receives escalation / hand-off emails.
+ESCALATION_EMAIL = os.getenv("ESCALATION_EMAIL", "vguptha@microsoft.com")
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict]:
@@ -1226,7 +1233,7 @@ def get_loan_settlement_options(customer_id: str) -> dict:
             "label": "Regularise now with fee waiver",
             "waivers_authorised": authorised_waivers,
             "amount_if_paid_now": settle_amount,
-            "condition": "Valid only if the overdue is cleared in full within 7 days.",
+            "condition": "Prompt-payment offer: pay the FULL overdue amount within 7 days FROM TODAY to get this waiver. This does NOT depend on how many days the account is already past due.",
             "benefit": "Waive late fee"
             + (" and penal interest" if "penal_interest_waiver" in authorised_waivers else "")
             + " if the amount is paid promptly.",
@@ -1248,13 +1255,216 @@ def get_loan_settlement_options(customer_id: str) -> dict:
     }
 
 
+# ─── Human escalation / hand-off (email) ──────────────────────────────────────
+
+def _write_outbox(to_addr: str, subject: str, body: str, error: str = "") -> Path:
+    """Persist a composed email to the local outbox/ folder (simulated send)."""
+    import datetime
+
+    outbox = Path(__file__).resolve().parent / "outbox"
+    outbox.mkdir(exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = outbox / f"{stamp}.txt"
+    header = (
+        f"To: {to_addr}\n"
+        f"Subject: {subject}\n"
+        + (f"X-Delivery-Error: {error}\n" if error else "")
+        + "\n"
+    )
+    path.write_text(header + body, encoding="utf-8")
+    return path
+
+
+def _deliver_email(to_addr: str, subject: str, body: str) -> str:
+    """
+    Send an email via SMTP if SMTP_HOST is configured; otherwise write it to the
+    local outbox/ folder (simulated handoff). Returns a delivery status string.
+    Never raises — a failed send falls back to the outbox so the handoff is
+    never silently lost.
+    """
+    host = os.getenv("SMTP_HOST", "").strip()
+    if not host:
+        path = _write_outbox(to_addr, subject, body)
+        return f"simulated (no SMTP configured) — written to {path}"
+    try:
+        msg = EmailMessage()
+        msg["From"] = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@contosobank.example"))
+        msg["To"] = to_addr
+        msg["Subject"] = subject
+        msg.set_content(body)
+        port = int(os.getenv("SMTP_PORT", "587"))
+        use_tls = os.getenv("SMTP_USE_TLS", "true").lower() != "false"
+        with smtplib.SMTP(host, port, timeout=15) as smtp:
+            if use_tls:
+                smtp.starttls()
+            user = os.getenv("SMTP_USER", "")
+            pwd = os.getenv("SMTP_PASSWORD", "")
+            if user and pwd:
+                smtp.login(user, pwd)
+            smtp.send_message(msg)
+        return "sent"
+    except Exception as exc:
+        path = _write_outbox(to_addr, subject, body, error=str(exc))
+        return f"smtp_error, written to outbox {path} ({exc})"
+
+
+def send_escalation(
+    customer_id: str,
+    campaign: str,
+    agent: str,
+    reason: str,
+    summary: str,
+    action_items=None,
+    priority: str = "medium",
+    escalation_type: str = "unresolved",
+    transcript=None,
+) -> dict:
+    """
+    Hand a call off to a human senior officer: e-mail the human agent a call
+    summary + action items + transcript, persist an escalation record to the
+    DB, and return a reference ticket. Used both for unresolved escalations
+    (frustrated customer / human required) and resolved hand-offs (a human
+    needs to action the next steps).
+    """
+    import datetime
+    import random
+
+    priority = (priority or "medium").lower()
+    if priority not in ("low", "medium", "high"):
+        priority = "medium"
+    if escalation_type not in ("unresolved", "resolved_handoff"):
+        escalation_type = "unresolved"
+
+    # Defensive: the model sometimes echoes the escalation_type enum into the
+    # free-text reason. Don't let that leak into the human's email.
+    reason = (reason or "").strip()
+    if reason.lower().replace(" ", "_") in ("resolved_handoff", "unresolved", ""):
+        reason = (
+            "Call resolved — needs a human to action the next steps."
+            if escalation_type == "resolved_handoff"
+            else "Customer needs human assistance."
+        )
+
+    profile = get_customer_profile(customer_id)
+    if not isinstance(profile, dict) or profile.get("error"):
+        profile = {}
+    customer_name = profile.get("name", customer_id)
+
+    created_at = datetime.datetime.now().isoformat(timespec="seconds")
+    ref = "ESC-" + datetime.date.today().strftime("%Y%m%d") + "-" + str(random.randint(1000, 9999))
+
+    # ── Normalise action items into a bullet list ──
+    if isinstance(action_items, (list, tuple)):
+        items = [str(a).strip() for a in action_items if str(a).strip()]
+    elif action_items:
+        items = [s.strip(" -•\t") for s in re.split(r"[\n;]+", str(action_items)) if s.strip()]
+    else:
+        items = []
+    action_md = "\n".join(f"  - {a}" for a in items) if items else "  - (none specified)"
+
+    # ── Readable transcript block ──
+    # Accepts (role, text) pairs, {"role":..,"text":..} dicts, or plain strings.
+    t_lines = []
+    for entry in (transcript or []):
+        role, text = None, None
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            role, text = entry
+        elif isinstance(entry, dict):
+            role = entry.get("role")
+            text = entry.get("text") or entry.get("content")
+        else:
+            text = str(entry)
+        if not text:
+            continue
+        speaker = "Customer" if role == "user" else (agent or "Agent")
+        t_lines.append(f"  {speaker}: {text}")
+    transcript_text = "\n".join(t_lines) if t_lines else "  (no transcript captured)"
+
+    kind = "ESCALATION" if escalation_type == "unresolved" else "RESOLVED HAND-OFF"
+    subject = f"[{kind} · {priority.upper()}] {campaign} — {customer_name} ({ref})"
+    body = (
+        f"{kind} — reference {ref}\n"
+        f"Created:      {created_at}\n"
+        f"Priority:     {priority.upper()}\n"
+        f"Campaign:     {campaign}\n"
+        f"Handled by:   {agent} (AI voice agent)\n"
+        f"\n"
+        f"CUSTOMER\n"
+        f"  Name:        {customer_name}\n"
+        f"  Customer ID: {customer_id}\n"
+        f"  Segment:     {profile.get('segment', 'N/A')}\n"
+        f"  City:        {profile.get('city', 'N/A')}\n"
+        f"  Phone:       {profile.get('phone', 'N/A')}\n"
+        f"\n"
+        f"REASON\n  {reason or '(not specified)'}\n"
+        f"\n"
+        f"CALL SUMMARY\n  {summary or '(not specified)'}\n"
+        f"\n"
+        f"ACTION ITEMS / NEXT STEPS\n{action_md}\n"
+        f"\n"
+        f"CALL TRANSCRIPT\n{transcript_text}\n"
+    )
+
+    delivery = _deliver_email(ESCALATION_EMAIL, subject, body)
+
+    # ── Persist escalation record (table created lazily — no reseed needed) ──
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS escalations (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                reference      TEXT,
+                customer_id    TEXT,
+                customer_name  TEXT,
+                campaign       TEXT,
+                agent          TEXT,
+                escalation_type TEXT,
+                reason         TEXT,
+                summary        TEXT,
+                action_items   TEXT,
+                priority       TEXT,
+                transcript     TEXT,
+                email_to       TEXT,
+                delivery       TEXT,
+                status         TEXT,
+                created_at     TEXT
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO escalations (reference, customer_id, customer_name, campaign, agent, "
+            "escalation_type, reason, summary, action_items, priority, transcript, email_to, "
+            "delivery, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ref, customer_id, customer_name, campaign, agent, escalation_type,
+                reason, summary, "\n".join(items),
+                priority,
+                "\n".join(f"{r}: {t}" for r, t in (transcript or [])),
+                ESCALATION_EMAIL, delivery, "open", created_at,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # persistence is best-effort; the email is the primary handoff
+
+    return {
+        "reference": ref,
+        "priority": priority,
+        "escalation_type": escalation_type,
+        "customer_name": customer_name,
+        "email_to": ESCALATION_EMAIL,
+        "delivery": delivery,
+        "created_at": created_at,
+        "message": "Escalation e-mailed to the human agent. A senior officer will follow up.",
+    }
+
+
 # ─── Function dispatch map ────────────────────────────────────────────────────
 
 
 TOOL_FUNCTIONS = {
     # Triage
-    "get_customer_profile": get_customer_profile,
-    "get_customer_summary": get_customer_summary,
+    "get_customer_profile": get_customer_profile,    "get_customer_summary": get_customer_summary,
     "get_eligibility_assessment": get_eligibility_assessment,
     # Credit Card
     "get_credit_card_details": get_credit_card_details,

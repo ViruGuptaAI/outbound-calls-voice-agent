@@ -195,6 +195,14 @@ function handleControlMessage(msg) {
             addToolStatus(msg.Label);
             break;
 
+        case 'EndCall':
+            handleEndCall(msg.Reason, msg.GraceMs);
+            break;
+
+        case 'Escalation':
+            addEscalationBanner(msg.Ticket, msg.Priority, msg.Type, msg.EmailTo);
+            break;
+
         // Legacy compat
         case 'Transcription':
             addAgentMessage(msg.Text, '');
@@ -435,6 +443,41 @@ function stopConversation() {
     if (ws) ws.close();
     cleanup();
     addSystemMessage('Call ended by user.');
+}
+
+// ── Server-initiated graceful end (agent hung up / idle timeout) ──
+function handleEndCall(reason, graceMs) {    addSystemMessage('📞 ' + (reason || 'Ending the call…'));
+    // Stop capturing and sending mic audio immediately so we don't keep the
+    // line open, but keep the audio context alive so the agent's farewell
+    // finishes playing before we tear everything down.
+    if (scriptProcessor) { try { scriptProcessor.disconnect(); } catch (_) {} scriptProcessor = null; }
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+    const grace = Math.max(500, Math.min(graceMs || 4000, 15000));
+    setTimeout(() => {
+        if (ws) { try { ws.close(); } catch (_) {} }
+        cleanup();
+        addSystemMessage('Call ended.');
+    }, grace);
+}
+
+// ── Escalation banner (handoff to a human agent) ─────────────────
+function addEscalationBanner(ticket, priority, type, emailTo) {
+    const resolved = type === 'resolved_handoff';
+    const title = resolved ? 'Handed off to a human agent' : 'Escalated to a human agent';
+    const icon = resolved ? '📨' : '🚨';
+    const parts = [];
+    if (ticket) parts.push('Ticket ' + ticket);
+    if (priority) parts.push('Priority: ' + String(priority).toUpperCase());
+    if (emailTo) parts.push('Emailed ' + emailTo);
+    const el = document.createElement('div');
+    el.className = 'message handoff';
+    el.innerHTML =
+        `<div class="handoff-banner-header">${icon} ${title}</div>` +
+        `<div class="handoff-banner-body">${parts.join(' · ')}</div>`;
+    appendMessage(el);
 }
 
 function cleanup() {

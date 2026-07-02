@@ -39,3 +39,7 @@ desktop.ini
 # ─── Local database (regenerate with: python seed_db.py) ─────────────────────
 *.db
 server/crm.db
+
+# ─── Generated escalation / hand-off artifacts (runtime) ─────────────────────
+server/outbox/
+server/escalations/

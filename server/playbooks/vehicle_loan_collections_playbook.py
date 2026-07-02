@@ -29,6 +29,10 @@ VEHICLE_LOAN_COLLECTIONS_PLAYBOOK = """
   3) one-time regularisation WITH the authorised late-fee / penal-interest waiver.
 - Only offer waivers or restructures that `get_loan_settlement_options` authorises for their
   bucket. Never volunteer a waiver before attempting full / oldest-EMI recovery.
+- If you offer the prompt-payment late-fee waiver, EXPLAIN IT SIMPLY: it means "pay the full
+  overdue amount within 7 days from today and we waive the late fee." It is a forward deadline,
+  NOT a rule about how many days the account is already past due. If the customer confuses the
+  two, correct it plainly and avoid jargon.
 - Use `play_hold_music` for a "let me check what I can approve" moment if warranted.
 
 ## STEP 6 — Secure the commitment

@@ -25,6 +25,86 @@ PLAY_HOLD_MUSIC = {
     },
 }
 
+END_CALL = {
+    "type": "function",
+    "name": "end_call",
+    "description": (
+        "Hang up and end the phone call. Call this ONLY after (1) the conversation is "
+        "genuinely concluded or the customer's need is resolved, (2) you have ASKED the "
+        "customer for permission to end — e.g. 'Is there anything else I can help you with, "
+        "or shall I let you go?' — and (3) the customer has confirmed they have nothing else. "
+        "In the SAME response where you call this tool you MUST first say a short, warm "
+        "farewell (e.g. 'Thanks for your time, take care — goodbye.'); the call ends "
+        "automatically once you finish speaking. NEVER call this while the customer still has "
+        "a question, is mid-sentence, or has not agreed to end the call. NEVER hang up abruptly."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Short reason the call is ending, e.g. 'customer confirmed nothing else', 'promise-to-pay recorded and confirmed'.",
+            }
+        },
+        "required": [],
+    },
+}
+
+ESCALATE_TO_HUMAN = {
+    "type": "function",
+    "name": "escalate_to_human",
+    "description": (
+        "Hand the call off to a HUMAN senior officer by e-mailing them a call summary, "
+        "action items, and the transcript — then end the call. Use this when: (a) the "
+        "customer is clearly frustrated/angry or negotiating unreasonably and you cannot "
+        "satisfy them within your authority, (b) the customer explicitly asks to speak to a "
+        "human / a senior person, (c) a human is genuinely required to proceed, OR (d) the "
+        "call reached a successful resolution and a human must action the next steps "
+        "(set escalation_type='resolved_handoff' for this case). BEFORE calling, briefly "
+        "confirm with the customer — e.g. 'I'll escalate this to a senior officer who will "
+        "call you back — is that okay?'. In the SAME response where you call this tool, tell "
+        "the customer you have NOTED their request and are escalating to a human agent (for a "
+        "resolved hand-off, thank them and say you've passed the details to the team for "
+        "follow-up). The call ends automatically once you finish speaking. Do NOT promise any "
+        "specific outcome the human has not approved."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "A short FREE-TEXT sentence explaining WHY you are handing off, written "
+                    "for the human agent to read. This is NOT a category — do NOT put "
+                    "'resolved_handoff' or 'unresolved' here (that goes in escalation_type). "
+                    "Examples: 'Customer wants a full late-fee waiver beyond my authority.', "
+                    "'Customer asked to speak to a senior officer.', 'Customer accepted the "
+                    "loan offer and the application needs a human to complete disbursal.'"
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "A concise 2–4 sentence summary of the call: the customer's issue, what was discussed and offered, and the current status.",
+            },
+            "action_items": {
+                "type": "string",
+                "description": "The next steps the human agent should take, as a short list separated by semicolons or newlines, e.g. 'Review full late-fee waiver; call the customer back within 24h; confirm the settlement plan'.",
+            },
+            "priority": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Urgency of the human callback.",
+            },
+            "escalation_type": {
+                "type": "string",
+                "enum": ["unresolved", "resolved_handoff"],
+                "description": "'unresolved' = the customer still needs human help; 'resolved_handoff' = the call is resolved and a human just needs to action the next steps.",
+            },
+        },
+        "required": ["reason", "summary"],
+    },
+}
+
 # ── Loan / sales tools ──────────────────────────────────────────────────────
 GET_PREAPPROVED_OFFERS = {
     "type": "function",
