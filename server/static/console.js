@@ -9,6 +9,26 @@ const selectEl = document.getElementById('customer-select');
 const detailEl = document.getElementById('customer-detail');
 const launchBtn = document.getElementById('btn-launch');
 const hintEl = document.getElementById('launch-hint');
+const toneEl = document.getElementById('tone-select');
+const toneHintEl = document.getElementById('tone-hint');
+
+// ── Tone selector ────────────────────────────────────────────────
+// In collections, tonality escalates with contact attempts / days past due.
+// The operator picks how firmly the agent should speak (server enforces an
+// RBI fair-practices compliance floor so even "stern" never harasses).
+const TONE_HINTS = {
+    cordial: 'Warm and patient — best for a first, good-faith reminder.',
+    firm: 'Direct and businesslike — for a follow-up on a rising overdue.',
+    stern: 'Serious and urgent — a final notice on a seriously overdue account.',
+    aggressive: 'Hardest lawful push — forceful, high-pressure delivery; still no threats or abuse.',
+};
+
+function updateToneHint() {
+    toneHintEl.textContent = TONE_HINTS[toneEl.value] || '';
+}
+
+toneEl.addEventListener('change', updateToneHint);
+updateToneHint();
 
 // ── Load campaigns ───────────────────────────────────────────────
 async function loadCampaigns() {
@@ -91,7 +111,7 @@ selectEl.addEventListener('change', () => {
             <div class="cust-row"><span>Segment</span><b>${c.segment}</b></div>
             <div class="cust-row"><span>City</span><b>${c.city || '—'}</b></div>
             <div class="cust-row"><span>Phone</span><b>${c.phone || '—'}</b></div>
-            ${c.overdue ? `<div class="cust-flag">⚠ ${c.card_overdue && c.loan_overdue ? 'Has overdue credit-card and vehicle-loan dues' : c.card_overdue ? 'Has an overdue credit-card balance' : 'Has an overdue vehicle-loan EMI'}</div>` : ''}
+            ${c.overdue ? `<div class="cust-flag">⚠ ${c.card_overdue && c.loan_overdue ? 'Has overdue credit-card and vehicle-loan dues' : c.card_overdue ? 'Has an overdue credit-card balance' : c.loan_overdue ? 'Has an overdue vehicle-loan EMI' : 'Has an overdue life insurance premium'}</div>` : ''}
         `;
     } else {
         detailEl.innerHTML = '';
@@ -117,6 +137,7 @@ launchBtn.addEventListener('click', () => {
     sessionStorage.setItem('outboundCall', JSON.stringify({
         campaignId: selectedCampaign,
         customerId: selectEl.value,
+        tone: toneEl.value,
         campaignTitle: campaignsById[selectedCampaign].title,
         agentName: campaignsById[selectedCampaign].agent,
         campaignIcon: campaignsById[selectedCampaign].icon,

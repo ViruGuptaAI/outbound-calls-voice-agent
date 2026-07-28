@@ -323,7 +323,7 @@ def get_card_spending_analysis(customer_id: str) -> dict:
         "fee_waiver_eligible": fee_waiver_eligible,
         "card_age_since": card["issued_on"],
         "top_category": max(category_spend, key=category_spend.get) if category_spend else None,
-    }
+    } 
 
 
 def check_card_upgrade_eligibility(customer_id: str) -> dict:
@@ -1255,6 +1255,156 @@ def get_loan_settlement_options(customer_id: str) -> dict:
     }
 
 
+# ─── Life Insurance Premium Recovery (Persistency) Tools ─────────────────────
+
+_FREQ_PER_YEAR = {"Monthly": 12, "Quarterly": 4, "Half-Yearly": 2, "Annual": 1}
+
+
+def get_policy_dues(customer_id: str) -> dict:
+    """
+    Current premium position on the customer's EXISTING life insurance policy:
+    plan, sum assured, premium amount + frequency, premiums paid/overdue, days
+    past due, grace-period / lapse / revival status, the amount payable now, and
+    the benefits currently AT RISK (life cover + any accrued value). Call this
+    FIRST on a premium-recovery call. Returns 'no_policy' if the customer holds
+    no policy with us (i.e. they are only a sales prospect).
+    """
+    row = _query_one("SELECT * FROM life_policies WHERE customer_id = ?", (customer_id,))
+    profile = _query_one("SELECT name FROM customers WHERE id = ?", (customer_id,))
+    name = profile["name"] if profile else ""
+
+    if not row:
+        return {
+            "customer_name": name,
+            "no_policy": True,
+            "message": "No life insurance policy on record for this customer.",
+        }
+
+    overdue = row["total_overdue_amount"] or 0
+    interest = row["revival_interest"] or 0
+    status = row["status"]
+    total_payable = round(overdue + interest, 2)
+
+    return {
+        "customer_name": name,
+        "no_policy": False,
+        "policy_number": row["policy_number"],
+        "plan_name": row["plan_name"],
+        "plan_type": row["plan_type"],
+        "sum_assured": row["sum_assured"],
+        "premium_amount": row["premium_amount"],
+        "premium_frequency": row["premium_frequency"],
+        "premiums_paid": row["premiums_paid"],
+        "premiums_overdue": row["premiums_overdue"],
+        "total_overdue_amount": overdue,
+        "revival_interest": interest,
+        "total_payable_now": total_payable,
+        "days_past_due": row["days_past_due"],
+        "grace_period_days": row["grace_period_days"],
+        "grace_end_date": row["grace_end_date"],
+        "revival_end_date": row["revival_end_date"],
+        "policy_status": status,  # 'In Grace' or 'Lapsed'
+        "benefits_at_risk": {
+            "life_cover": row["sum_assured"],
+            "accrued_value": row["accrued_benefit"] or 0,
+            "note": (
+                "Cover is currently INACTIVE — a claim would NOT be paid until revived."
+                if status == "Lapsed"
+                else "Cover is still active during the grace period, but will STOP if the premium is not paid by the grace end date."
+            ),
+        },
+        "last_payment_date": row["last_payment_date"],
+        "last_payment_amount": row["last_payment_amount"],
+        "status_note": (
+            "LAPSED — pay the arrears plus interest within the revival window to restore cover."
+            if status == "Lapsed"
+            else "IN GRACE — pay the pending premium before the grace end date to keep the policy in-force with no interest."
+        ),
+    }
+
+
+def get_revival_options(customer_id: str) -> dict:
+    """
+    Compute the options authorised to bring an overdue life policy back on track,
+    gated by whether it is still in the grace period or has lapsed. Options may
+    include: pay the pending premium now (in grace, no interest), revive a lapsed
+    policy (arrears + interest, possibly a health declaration), switch premium
+    frequency to lower each instalment, set up auto-debit to avoid future misses,
+    and — for savings plans with enough premiums paid — make the policy paid-up.
+    Call this BEFORE proposing any option. This is persistency, NOT debt recovery:
+    the customer's OWN cover and money are at stake, so guide, never pressure.
+    """
+    row = _query_one("SELECT * FROM life_policies WHERE customer_id = ?", (customer_id,))
+    if not row:
+        return {"no_policy": True, "message": "No life insurance policy on record."}
+
+    status = row["status"]
+    premium = row["premium_amount"] or 0
+    freq = row["premium_frequency"] or "Annual"
+    overdue = row["total_overdue_amount"] or 0
+    interest = row["revival_interest"] or 0
+    plan_type = row["plan_type"]
+    premiums_paid = row["premiums_paid"] or 0
+
+    per_year = _FREQ_PER_YEAR.get(freq, 1)
+    annual_premium = premium * per_year
+    monthly_equiv = round(annual_premium / 12, 2)
+
+    options = []
+
+    if status == "In Grace":
+        options.append({
+            "option": "pay_pending_premium",
+            "label": "Pay the pending premium now (before the grace end date)",
+            "amount": round(overdue, 2),
+            "benefit": "Keeps the policy in-force with NO interest or penalty; your cover simply continues uninterrupted.",
+        })
+    else:  # Lapsed
+        options.append({
+            "option": "revive_policy",
+            "label": "Revive the policy to restore full cover",
+            "amount": round(overdue + interest, 2),
+            "requires": "A simple declaration of good health (a medical check may be needed only for large gaps).",
+            "condition": f"Revivable until {row['revival_end_date']}.",
+            "benefit": "Restores your full life cover and all accrued benefits, as if the policy never stopped.",
+        })
+
+    # Easier future payments — always offer if not already monthly
+    if freq != "Monthly":
+        options.append({
+            "option": "switch_to_monthly",
+            "label": "Switch to monthly premiums to make each instalment smaller",
+            "current": f"{freq}: ₹{premium:,.0f} per instalment",
+            "proposed": f"Monthly: about ₹{monthly_equiv:,.0f} per month",
+            "benefit": "Smaller, more manageable amounts so a payment is less likely to be missed.",
+        })
+    options.append({
+        "option": "setup_auto_debit",
+        "label": "Set up auto-debit / NACH so premiums are never missed again",
+        "benefit": "Automatic on-time payment protects your cover and your accrued benefits going forward.",
+    })
+
+    # Savings-type plans with enough premiums paid can be made paid-up as a last resort
+    if plan_type in ("savings", "child", "retirement") and premiums_paid >= 8:
+        options.append({
+            "option": "reduced_paid_up",
+            "label": "Make the policy 'paid-up' if you truly cannot continue",
+            "benefit": "Stops future premiums; you keep a reduced guaranteed cover and the value already built — better than surrendering.",
+            "caveat": "Cover and maturity value reduce. Offer this ONLY if the customer genuinely cannot continue premiums.",
+        })
+
+    return {
+        "customer_id": customer_id,
+        "policy_status": status,
+        "plan_type": plan_type,
+        "total_payable_now": round(overdue + (interest if status == "Lapsed" else 0), 2),
+        "authorised_options": options,
+        "_INTERNAL_do_not_disclose": {
+            "note": "Lead with keeping the cover intact (pay pending / revive). Offer paid-up or premium reduction ONLY on genuine affordability hardship — never volunteer it first.",
+        },
+    }
+
+
 # ─── Human escalation / hand-off (email) ──────────────────────────────────────
 
 def _write_outbox(to_addr: str, subject: str, body: str, error: str = "") -> Path:
@@ -1514,12 +1664,373 @@ def send_escalation(
     }
 
 
+# ─── Life Insurance ───────────────────────────────────────────────────────────
+
+# Static product catalogue. Generic protection/savings/investment families —
+# not tied to any specific insurer. Returns only customer-facing benefit copy.
+_INSURANCE_PLANS = {
+    "protection": {
+        "family": "Protection (Term Life)",
+        "purpose": "Pure life cover — the most affordable way to secure your family's income if something happens to you.",
+        "key_benefits": [
+            "High life cover at a low premium (best value for money)",
+            "Cover for your family's living costs, EMIs and future goals",
+            "Optional riders: accidental death, critical illness, terminal illness",
+            "Level premium locked for the whole term",
+        ],
+        "best_for": "The primary breadwinner, anyone with dependents or an outstanding loan.",
+        "return_nature": "No maturity payout — this is protection, not investment.",
+    },
+    "savings": {
+        "family": "Guaranteed Savings (Endowment)",
+        "purpose": "Disciplined long-term savings with life cover and a guaranteed* maturity benefit.",
+        "key_benefits": [
+            "Guaranteed* lump sum or regular income on maturity",
+            "Life cover throughout the policy term",
+            "Ideal for goal-based saving (a home, a wedding, a corpus)",
+            "Steady, low-risk growth — not linked to markets",
+        ],
+        "best_for": "Conservative savers who want protection plus assured returns.",
+        "return_nature": "Guaranteed/assured benefits (*as per plan terms) — low risk.",
+    },
+    "ulip": {
+        "family": "Market-Linked (ULIP)",
+        "purpose": "Grow wealth through market-linked funds while keeping a life cover.",
+        "key_benefits": [
+            "Choice of equity/debt/balanced funds with free switches",
+            "Potential for higher, market-linked growth over the long term",
+            "Life cover bundled with investment",
+            "Tax-efficient long-term wealth creation",
+        ],
+        "best_for": "Customers comfortable with market risk and a long horizon.",
+        "return_nature": "MARKET-LINKED and NOT guaranteed — returns can go up or down.",
+    },
+    "child": {
+        "family": "Child Plan",
+        "purpose": "Build a guaranteed corpus for your child's education/future, protected even if you're not around.",
+        "key_benefits": [
+            "Payouts timed to education milestones",
+            "Premium waiver — the plan continues even if the parent passes away",
+            "Guaranteed* or market-linked options",
+        ],
+        "best_for": "Parents planning for a child's higher education or wedding.",
+        "return_nature": "Depends on variant chosen (guaranteed* or market-linked).",
+    },
+    "retirement": {
+        "family": "Retirement / Pension",
+        "purpose": "Build a retirement corpus now and convert it into a regular pension for life.",
+        "key_benefits": [
+            "Regular guaranteed* income after retirement",
+            "Deferred or immediate annuity options",
+            "Helps beat inflation over a long saving horizon",
+        ],
+        "best_for": "Anyone who wants a dependable income after they stop working.",
+        "return_nature": "Guaranteed* annuity income (*as per plan terms).",
+    },
+}
+
+
+def get_insurance_plans(category: str | None = None) -> dict:
+    """Life insurance product catalogue. One family if category given, else all."""
+    if category:
+        plan = _INSURANCE_PLANS.get(category)
+        if not plan:
+            return {"error": f"Unknown category '{category}'", "available": list(_INSURANCE_PLANS)}
+        return plan
+    return {
+        "families": list(_INSURANCE_PLANS.values()),
+        "note": "Match the family to the customer's need. Never overstate returns — ULIP and market-linked variants are NOT guaranteed.",
+    }
+
+
+def _age_from_dob(dob: str | None) -> int | None:
+    """Whole-years age from an ISO 'YYYY-MM-DD' date of birth."""
+    from datetime import date
+    if not dob:
+        return None
+    try:
+        d = date.fromisoformat(dob)
+    except (ValueError, TypeError):
+        return None
+    today = date.today()
+    return today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+
+
+def get_cover_recommendation(customer_id: str) -> dict:
+    """
+    Human Life Value (HLV) assessment: how much life cover the family needs.
+    Uses annual income (income-replacement multiple by age band) + outstanding
+    liabilities. Returns recommended cover and the likely protection gap.
+    """
+    customer = _query_one(
+        "SELECT name, dob, monthly_income FROM customers WHERE id = ?", (customer_id,)
+    )
+    if not customer:
+        return {"error": "Customer not found"}
+
+    monthly_income = customer.get("monthly_income") or 0
+    annual_income = monthly_income * 12
+    age = _age_from_dob(customer.get("dob"))
+
+    # Income-replacement multiple falls as you age (fewer earning years left).
+    if age is None:
+        multiple = 12
+    elif age < 35:
+        multiple = 15
+    elif age < 45:
+        multiple = 12
+    else:
+        multiple = 10
+
+    income_cover = annual_income * multiple
+
+    # Add outstanding liabilities so cover clears debts too.
+    loans = _query(
+        "SELECT outstanding FROM loans WHERE customer_id = ? AND status = 'Active'",
+        (customer_id,),
+    )
+    liabilities = sum(l["outstanding"] for l in loans)
+
+    # No policies held in this demo CRM → assume no existing cover.
+    existing_cover = 0
+    recommended_total = income_cover + liabilities
+    protection_gap = max(0, recommended_total - existing_cover)
+
+    def _to_lakhs(v: float) -> float:
+        return round(v / 100000, 1)
+
+    # Insurance is sold in round cover slabs, never odd figures like ₹1,96,00,000.
+    # Round to the nearest ₹25 lakh and write it as a full Indian-format numeral
+    # (₹2,00,00,000), NOT as "crore"/"lakh" words.
+    def _round_slab(v: float) -> int:
+        slab = 2_500_000  # ₹25 lakh
+        return int(round(v / slab) * slab) if v > 0 else 0
+
+    def _indian_commas(n: float) -> str:
+        s = str(int(round(n)))
+        if len(s) <= 3:
+            return s
+        last3 = s[-3:]
+        rest = re.sub(r"(?<=\d)(?=(\d\d)+$)", ",", s[:-3])
+        return rest + "," + last3
+
+    def _spoken(v: float) -> str:
+        return f"₹{_indian_commas(v)}" if v > 0 else "₹0"
+
+    recommended_rounded = _round_slab(recommended_total)
+
+    return {
+        "age": age,
+        "annual_income": annual_income,
+        "income_multiple": multiple,
+        # Internal components — for records/underwriting ONLY, do NOT read these
+        # out to the customer (no liability itemisation, no exact figures).
+        "income_replacement_cover_INTERNAL": income_cover,
+        "outstanding_liabilities_INTERNAL": liabilities,
+        "existing_cover": existing_cover,
+        "recommended_total_cover_exact_INTERNAL": recommended_total,
+        # This is the ONLY figure to speak — a clean, round cover slab.
+        "recommended_cover_rounded": recommended_rounded,
+        "recommended_cover_spoken": f"around {_spoken(recommended_rounded)}",
+        "protection_gap": protection_gap,
+        "protection_gap_lakhs": _to_lakhs(protection_gap),
+        "note": (
+            "Speak ONLY 'recommended_cover_spoken' — a ROUND figure written in full Indian "
+            "rupees, e.g. 'around ₹2,00,00,000' (NOT 'crore'/'lakh' words). NEVER read out the "
+            "exact amount, the income-multiple arithmetic, or the liabilities/loans breakdown "
+            "(all *_INTERNAL). Justify it simply, e.g. 'roughly what your family would need to "
+            "maintain their lifestyle and stay secure'."
+        ),
+    }
+
+
+def _base_annual_premium(
+    age_used: int, cover_lakhs: float, term_years: int, plan_type: str
+) -> tuple[float, list[str]]:
+    """Shared base indicative annual premium + plan notes (pre-concession)."""
+    sum_assured = cover_lakhs * 100000
+    plan_type = (plan_type or "").lower()
+    notes: list[str] = []
+
+    if plan_type == "term":
+        # Pure protection: cheap, level premium. Mortality-driven by age.
+        rate_per_lakh = 45 + max(0, age_used - 25) * 7
+        annual = cover_lakhs * rate_per_lakh
+        notes.append("Pure term cover — no maturity payout; premium buys protection only.")
+    elif plan_type == "ulip":
+        # Market-linked: min sum assured is typically ~10x the annual premium.
+        annual = sum_assured / 10
+        notes.append("Market-linked (ULIP): returns are NOT guaranteed and depend on fund performance.")
+        notes.append("Sum assured is typically ~10× the annual premium; final allocation charges apply.")
+    else:
+        # savings / child / retirement: accumulate roughly the sum assured over the
+        # term, with a small load and a mild age loading.
+        term = max(1, term_years)
+        base = sum_assured / term
+        annual = base * 1.05 * (1 + max(0, age_used - 30) * 0.005)
+        if plan_type == "savings":
+            notes.append("Guaranteed savings/endowment — includes life cover plus a guaranteed* maturity benefit.")
+        elif plan_type == "child":
+            notes.append("Child plan — builds a corpus for the child; includes a premium-waiver on the parent.")
+        elif plan_type == "retirement":
+            notes.append("Retirement plan — accumulates a corpus to convert into a pension later.")
+        else:
+            notes.append("Savings-type plan.")
+
+    return annual, notes
+
+
+def calculate_insurance_premium(
+    customer_id: str,
+    cover_lakhs: float,
+    term_years: int,
+    plan_type: str,
+) -> dict:
+    """
+    Indicative annual/monthly premium for a life plan. Age is derived from the
+    customer's profile (never asked). Figures are indicative, pre-underwriting,
+    and exclusive of applicable taxes.
+    """
+    customer = _query_one("SELECT dob FROM customers WHERE id = ?", (customer_id,))
+    if not customer:
+        return {"error": "Customer not found"}
+
+    age = _age_from_dob(customer.get("dob"))
+    age_used = age if age is not None else 35  # safe default if DOB missing
+
+    annual, notes = _base_annual_premium(age_used, cover_lakhs, term_years, plan_type)
+
+    annual = int(round(annual / 100.0) * 100)  # round to nearest ₹100
+    monthly = int(round((annual / 12) / 10.0) * 10)  # round to nearest ₹10
+
+    return {
+        "plan_type": (plan_type or "").lower(),
+        "age_used": age_used,
+        "cover_lakhs": cover_lakhs,
+        "term_years": term_years,
+        "annual_premium": annual,
+        "monthly_premium": monthly,
+        "notes": notes,
+        "disclaimer": (
+            "Indicative only — subject to underwriting, health declarations and final board-approved "
+            "rates; exclusive of applicable taxes. Do NOT present as a final or guaranteed quote. The "
+            "FINAL premium is confirmed only AFTER the medical check-up."
+        ),
+    }
+
+
+# Maximum total premium concession the agent may offer, by plan family. Savings
+# and market-linked plans carry less margin than pure protection, so they flex
+# less. This is the CEILING on any discount — the agent must never go below the
+# resulting floor premium.
+_MAX_PREMIUM_DISCOUNT_PCT = {
+    "term": 15.0,
+    "savings": 8.0,
+    "child": 8.0,
+    "retirement": 8.0,
+    "ulip": 5.0,
+}
+
+
+def get_premium_negotiation(
+    customer_id: str,
+    cover_lakhs: float,
+    term_years: int,
+    plan_type: str,
+) -> dict:
+    """
+    The AUTHORISED premium-concession band for a life plan: the base indicative
+    premium, staged concession ROUNDS the agent may offer (each tied to a real
+    lever), and the FLOOR premium below which the agent must never go. Call this
+    BEFORE negotiating on price so every concession is grounded and bounded —
+    never invent a discount or a lower premium. Concede round by round; use a
+    hold ("check with underwriting") before offering the best (final) round.
+    """
+    customer = _query_one("SELECT dob FROM customers WHERE id = ?", (customer_id,))
+    if not customer:
+        return {"error": "Customer not found"}
+
+    age = _age_from_dob(customer.get("dob"))
+    age_used = age if age is not None else 35
+    ptype = (plan_type or "").lower()
+
+    base_annual_f, _ = _base_annual_premium(age_used, cover_lakhs, term_years, ptype)
+    max_pct = _MAX_PREMIUM_DISCOUNT_PCT.get(ptype, 8.0)
+
+    def _r100(v: float) -> int:
+        return int(round(v / 100.0) * 100)
+
+    def _m10(annual: float) -> int:
+        return int(round((annual / 12) / 10.0) * 10)
+
+    base_annual = _r100(base_annual_f)
+
+    # Staged rounds — cumulative discount, capped at max_pct (the ceiling).
+    # Round 1 ≈ a third of the band, Round 2 ≈ two-thirds, Round 3 = floor.
+    r1_pct = round(max_pct * 0.35, 1)
+    r2_pct = round(max_pct * 0.65, 1)
+    r3_pct = max_pct
+
+    def _round(annual_after: float, pct: float, label: str, lever: str, requires: str, use_hold=False) -> dict:
+        a = _r100(annual_after)
+        return {
+            "discount_pct": pct,
+            "annual_premium": a,
+            "monthly_premium": _m10(a),
+            "label": label,
+            "lever": lever,
+            "requires": requires,
+            "use_hold_before_offering": use_hold,
+        }
+
+    rounds = [
+        _round(base_annual_f * (1 - r1_pct / 100), r1_pct,
+               "Pay yearly instead of monthly",
+               "annual payment mode (removes the monthly modal loading)",
+               "Customer agrees to pay annually."),
+        _round(base_annual_f * (1 - r2_pct / 100), r2_pct,
+               "Healthy non-smoker / online-direct concession",
+               "non-smoker + good health, bought online/direct",
+               "Confirmed only AFTER the medical check-up; assumes non-smoker, clean health."),
+        _round(base_annual_f * (1 - r3_pct / 100), r3_pct,
+               "Best possible — with underwriting/senior approval",
+               "special underwriting approval",
+               "Senior/underwriting approval; offer ONLY as your final position.",
+               use_hold=True),
+    ]
+
+    floor_annual = rounds[-1]["annual_premium"]
+
+    return {
+        "customer_id": customer_id,
+        "plan_type": ptype,
+        "cover_lakhs": cover_lakhs,
+        "term_years": term_years,
+        "base_annual_premium": base_annual,
+        "base_monthly_premium": _m10(base_annual_f),
+        "concession_rounds": rounds,
+        "guidance": (
+            "Negotiate round by round — never jump straight to the best round. Use `play_hold_music` "
+            "for a 'let me check with underwriting' beat BEFORE offering the final round. Every figure "
+            "here is INDICATIVE; the FINAL premium is confirmed only AFTER the medical check-up."
+        ),
+        "_INTERNAL_do_not_disclose": {
+            "max_total_discount_pct": max_pct,
+            "floor_annual_premium": floor_annual,
+            "floor_monthly_premium": rounds[-1]["monthly_premium"],
+            "note": "NEVER quote a premium below the floor. Do NOT reveal the max discount or the floor to the customer.",
+        },
+    }
+
+
+
 # ─── Function dispatch map ────────────────────────────────────────────────────
 
 
 TOOL_FUNCTIONS = {
     # Triage
-    "get_customer_profile": get_customer_profile,    "get_customer_summary": get_customer_summary,
+    "get_customer_profile": get_customer_profile,    
+    "get_customer_summary": get_customer_summary,
     "get_eligibility_assessment": get_eligibility_assessment,
     # Credit Card
     "get_credit_card_details": get_credit_card_details,
@@ -1548,6 +2059,14 @@ TOOL_FUNCTIONS = {
     # Collections (vehicle loan recovery)
     "get_loan_dues": get_loan_dues,
     "get_loan_settlement_options": get_loan_settlement_options,
+    # Life insurance premium recovery (persistency)
+    "get_policy_dues": get_policy_dues,
+    "get_revival_options": get_revival_options,
+    # Life insurance
+    "get_insurance_plans": get_insurance_plans,
+    "get_cover_recommendation": get_cover_recommendation,
+    "calculate_insurance_premium": calculate_insurance_premium,
+    "get_premium_negotiation": get_premium_negotiation,
     # Savings
     "get_account_details": get_account_details,
     "get_fixed_deposits": get_fixed_deposits,

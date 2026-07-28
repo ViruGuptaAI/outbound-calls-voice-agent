@@ -322,3 +322,81 @@ GET_LOAN_SETTLEMENT_OPTIONS = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+# ── Life insurance tools ──────────────────────────────────────────────────────
+GET_INSURANCE_PLANS = {
+    "type": "function",
+    "name": "get_insurance_plans",
+    "description": "Get the life insurance product catalogue: plan categories (protection/term, guaranteed savings, market-linked ULIP, child, retirement/pension) with their purpose, key benefits, and who they suit. Use this to match a plan to the customer's need AFTER you understand their situation. Pass a category to get one family, or omit it to get an overview of all.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": ["protection", "savings", "ulip", "child", "retirement"],
+                "description": "Optional. Which plan family to detail. protection = pure term life cover; savings = guaranteed savings/endowment with maturity benefit; ulip = market-linked investment plan; child = child's education/future; retirement = pension/annuity. Omit for an overview of all families.",
+            }
+        },
+        "required": [],
+    },
+}
+
+GET_COVER_RECOMMENDATION = {
+    "type": "function",
+    "name": "get_cover_recommendation",
+    "description": "Run a Human Life Value (HLV) assessment for the customer you are calling. Uses their income, age, and outstanding liabilities to recommend how much life cover (sum assured) their family actually needs, and the likely protection gap. Call this to make the protection conversation concrete and personal — never invent a cover figure yourself.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+CALCULATE_INSURANCE_PREMIUM = {
+    "type": "function",
+    "name": "calculate_insurance_premium",
+    "description": "Calculate an INDICATIVE annual and monthly premium for a life insurance plan. Provide the sum assured (life cover) in LAKHS, the policy term in YEARS, and the plan type. The customer's age is taken automatically from their profile — do NOT ask for or invent it. The figure is indicative and subject to underwriting; always present it as such and never as a final/guaranteed quote.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "cover_lakhs": {"type": "number", "description": "Sum assured / life cover in LAKHS. 50 lakh = 50, 1 crore = 100."},
+            "term_years": {"type": "integer", "description": "Policy term in YEARS (e.g. 10, 20, 30)."},
+            "plan_type": {
+                "type": "string",
+                "enum": ["term", "savings", "ulip", "child", "retirement"],
+                "description": "term = pure protection; savings = guaranteed savings/endowment; ulip = market-linked; child = child plan; retirement = pension/annuity build-up.",
+            },
+        },
+        "required": ["cover_lakhs", "term_years", "plan_type"],
+    },
+}
+
+GET_PREMIUM_NEGOTIATION = {
+    "type": "function",
+    "name": "get_premium_negotiation",
+    "description": "Get the AUTHORISED premium-concession band for a life plan: the base indicative premium, the staged concession ROUNDS you may offer (each tied to a real lever — annual payment mode, healthy/non-smoker, or a final underwriting-approved concession), and the FLOOR below which you must never quote. Call this BEFORE negotiating on price so every concession is grounded and bounded — never invent a discount or a lower premium. Concede round by round; use a hold before the final round; never go below the floor.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "cover_lakhs": {"type": "number", "description": "Sum assured / life cover in LAKHS. 50 lakh = 50, 1 crore = 100."},
+            "term_years": {"type": "integer", "description": "Policy term in YEARS (e.g. 10, 20, 30)."},
+            "plan_type": {
+                "type": "string",
+                "enum": ["term", "savings", "ulip", "child", "retirement"],
+                "description": "term = pure protection; savings = guaranteed savings/endowment; ulip = market-linked; child = child plan; retirement = pension/annuity build-up.",
+            },
+        },
+        "required": ["cover_lakhs", "term_years", "plan_type"],
+    },
+}
+
+# ── Life insurance premium recovery (persistency) tools ───────────────────────
+GET_POLICY_DUES = {
+    "type": "function",
+    "name": "get_policy_dues",
+    "description": "Get the current premium position on the customer's EXISTING life insurance policy: plan, sum assured, premium amount and frequency, premiums paid/overdue, days past due, whether it is still in the grace period or has LAPSED, the grace/revival dates, the amount payable now, and the benefits currently AT RISK (life cover + any accrued value). Call this FIRST on a premium-recovery call.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+GET_REVIVAL_OPTIONS = {
+    "type": "function",
+    "name": "get_revival_options",
+    "description": "Get the options you are AUTHORISED to offer to bring an overdue life policy back on track, gated by whether it is in grace or lapsed: pay the pending premium now (in grace, no interest), revive a lapsed policy (arrears + interest, possibly a health declaration), switch premium frequency to a smaller instalment, set up auto-debit to avoid future misses, and — for savings plans with enough premiums paid — make it paid-up. Call this BEFORE proposing any option. This is persistency, NOT debt recovery — the customer's own cover and money are at stake, so guide, never pressure.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+

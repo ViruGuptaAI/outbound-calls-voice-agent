@@ -282,6 +282,33 @@ def create_schema(cur: sqlite3.Cursor):
         bucket            TEXT,   -- '1-30', '31-60', '61-90', '90+'
         status            TEXT DEFAULT 'Overdue'
     );
+
+    -- ─── Life Insurance Policies (for premium recovery / persistency) ─
+    CREATE TABLE IF NOT EXISTS life_policies (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id         TEXT NOT NULL REFERENCES customers(id),
+        policy_number       TEXT,
+        plan_name           TEXT,
+        plan_type           TEXT,   -- protection, savings, ulip, child, retirement
+        sum_assured         REAL,
+        premium_amount      REAL,   -- per instalment
+        premium_frequency   TEXT,   -- Monthly, Quarterly, Half-Yearly, Annual
+        policy_start        TEXT,
+        policy_term_years   INTEGER,
+        premium_paying_term_years INTEGER,
+        premiums_paid       INTEGER,
+        premiums_overdue    INTEGER,
+        total_overdue_amount REAL,  -- sum of overdue premiums (excl. interest)
+        days_past_due       INTEGER,
+        grace_period_days   INTEGER, -- 15 (monthly) or 30 (other modes)
+        grace_end_date      TEXT,
+        revival_end_date    TEXT,    -- end of revival window (for lapsed policies)
+        revival_interest    REAL,    -- interest/penalty to revive a lapsed policy
+        accrued_benefit     REAL,    -- accrued bonus (savings) or fund value (ulip)
+        last_payment_date   TEXT,
+        last_payment_amount REAL,
+        status              TEXT     -- 'In Grace' or 'Lapsed'
+    );
     """)
 
 
@@ -649,6 +676,38 @@ def seed_data(cur: sqlite3.Cursor):
         "last_payment_date,last_payment_amount,due_date,bucket,status) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         loan_collections,
+    )
+
+    # ── Life Insurance Policies (premium recovery / persistency campaign) ─
+    # These customers ALREADY hold a policy with us and have missed a premium.
+    # (Viru deliberately has NO policy — he is a fresh sales prospect only.)
+    # customer_id, policy_number, plan_name, plan_type, sum_assured,
+    # premium_amount, premium_frequency, policy_start, policy_term_years,
+    # premium_paying_term_years, premiums_paid, premiums_overdue,
+    # total_overdue_amount, days_past_due, grace_period_days, grace_end_date,
+    # revival_end_date, revival_interest, accrued_benefit, last_payment_date,
+    # last_payment_amount, status
+    life_policies = [
+        # Harshal — guaranteed savings plan, still WITHIN the grace period.
+        # One quarterly premium missed 18 days ago; grace ends 2026-08-09.
+        ('harshal', 'CL-SAV-2022-778210', 'Contoso Life Guaranteed Savings', 'savings',
+         1500000, 18750, 'Quarterly', '2022-05-10', 20, 15, 15, 1,
+         18750, 18, 30, '2026-08-09', None, 0, 95000, '2026-04-10', 18750, 'In Grace'),
+        # Sneha — pure term protection plan, LAPSED (missed the grace window).
+        # Two monthly premiums overdue; cover is currently INACTIVE; revivable.
+        ('sneha', 'CL-TRM-2021-556300', 'Contoso Life Smart Term Shield', 'protection',
+         10000000, 4200, 'Monthly', '2021-08-01', 30, 30, 58, 2,
+         8400, 53, 15, '2026-06-20', '2031-06-05', 340, 0, '2026-05-05', 4200, 'Lapsed'),
+    ]
+    cur.executemany(
+        "INSERT INTO life_policies "
+        "(customer_id,policy_number,plan_name,plan_type,sum_assured,premium_amount,"
+        "premium_frequency,policy_start,policy_term_years,premium_paying_term_years,"
+        "premiums_paid,premiums_overdue,total_overdue_amount,days_past_due,"
+        "grace_period_days,grace_end_date,revival_end_date,revival_interest,"
+        "accrued_benefit,last_payment_date,last_payment_amount,status) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        life_policies,
     )
 
 

@@ -55,6 +55,92 @@ IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "60"))
 # How often the idle monitor wakes up to check for silence.
 IDLE_CHECK_INTERVAL_SECONDS = 2
 
+# ── Call tone / tonality (operator-selectable) ───────────────────────────────
+# In collections, tonality escalates with the number of contact attempts / days
+# past due. The operator picks the tone from the console; it shapes HOW firmly
+# the agent speaks WITHOUT ever crossing into harassment or threats (this stays
+# within RBI fair-practices / dignified-conduct rules — see TONE_COMPLIANCE_FLOOR).
+DEFAULT_TONE = "cordial"
+TONE_INSTRUCTIONS = {
+    "cordial": (
+        "\n\n# CALL TONE — CORDIAL & EMPATHETIC (early-stage / first contact)\n"
+        "- Speak warmly and patiently, like a helpful relationship manager. Assume good "
+        "faith — the customer may simply have forgotten or hit a temporary rough patch.\n"
+        "- Lead with understanding: acknowledge their situation, ask open questions, and "
+        "offer help (reminders, flexible options) before mentioning any consequence.\n"
+        "- Keep pressure low. No urgency language; the goal is a comfortable, willing commitment.\n"
+    ),
+    "firm": (
+        "\n\n# CALL TONE — FIRM & PROFESSIONAL (repeated contact / rising overdue)\n"
+        "- Stay polite and respectful, but be noticeably more direct and businesslike. "
+        "This is a follow-up — the customer has been contacted before.\n"
+        "- Clearly state the outstanding position and that it needs to be resolved now. "
+        "Reduce small talk; steer firmly toward a concrete payment commitment today.\n"
+        "- Calmly mention standard consequences of continued non-payment (late fees, credit "
+        "bureau reporting) as facts, not threats. Press for a specific date and amount.\n"
+    ),
+    "stern": (
+        "\n\n# CALL TONE — STERN & URGENT (final notice / seriously overdue)\n"
+        "- Adopt a serious, urgent, no-nonsense tone. This is a final-reminder call; the "
+        "account is significantly past due and needs immediate resolution.\n"
+        "- Be crisp and insistent. State plainly that this cannot be deferred further and "
+        "that a payment or a firm commitment is required on THIS call.\n"
+        "- Spell out the concrete, formal consequences of continued default (escalation to "
+        "recovery, credit-score impact, applicable charges) as factual next steps.\n"
+    ),
+    "aggressive": (
+        "\n\n# CALL TONE — ASSERTIVE & HIGH-PRESSURE (hardest lawful firmness)\n"
+        "- This is the firmest, most insistent tier, for a repeatedly-defaulted, seriously "
+        "overdue account. Speak with authority and gravity, like a senior recovery officer "
+        "who will not be brushed off. Short, direct, forceful sentences.\n"
+        "- Convey real urgency and seriousness: make it unmistakably clear the account is in "
+        "a critical state and that a payment or a firm, dated commitment is required NOW, on "
+        "this call. Do not soften or trail off.\n"
+        "- Press hard and repeatedly for a concrete outcome — an exact amount and an exact "
+        "date — and do not accept vague deferrals. Hold the line firmly if they stall.\n"
+        "- State the concrete formal consequences of continued default plainly and factually "
+        "(recovery escalation, credit-bureau reporting, penal charges, legal-recovery steps "
+        "as per contract). Present them as real, imminent facts — NEVER as personal threats.\n"
+        "- CRITICAL: firmness and pressure ONLY. This is assertiveness, not hostility. You "
+        "must still obey the TONE COMPLIANCE FLOOR below at all times — no abuse, no "
+        "intimidation, no threats of harm, and always leave a clear way to pay.\n"
+    ),
+}
+# Hard compliance floor — applied on top of EVERY firmer tone, including 'stern'.
+# The agent must never harass, threaten, abuse, or intimidate the customer.
+# TONE_COMPLIANCE_FLOOR = (
+#     "\n# TONE COMPLIANCE FLOOR (ALWAYS, even when stern or aggressive)\n"
+#     "- NEVER shout, abuse, insult, threaten, or use intimidating or coercive language. "
+#     "No threats of arrest, violence, seizing homes, public shaming, or contacting the "
+#     "customer's employer/family/references. Stay within RBI fair-practices and dignified "
+#     "conduct at all times.\n"
+#     "- Firmness and pressure are about CLARITY, DIRECTNESS, and URGENCY — never hostility, "
+#     "fear-mongering, or personal attacks. Remain professional and factual no matter how "
+#     "overdue the account is, and no matter how the customer behaves.\n"
+#     "- If the customer becomes abusive, stay calm and professional; do NOT retaliate. "
+#     "De-escalate or offer to escalate to a human — never trade insults.\n"
+#     "- Always give the customer a clear way forward (payment options, help, or escalation "
+#     "to a human). Pressure without a path to pay is not allowed.\n"
+# )
+
+# Per-tone TTS delivery — makes the tonality AUDIBLE. Firmer tiers speak louder
+# and lower-pitched so the escalation is heard, not just worded.
+# Voice choice per tone:
+#   • Diya (Dragon HD) for cordial/firm/stern — natural en-IN, auto-adapts tone
+#     from the wording (its `style` field is best-effort/ignored).
+#   • Kavya (MAI-Voice-2) for aggressive — a style-capable voice that HONOURS
+#     explicit emotion styles ('angry', 'shouting', …) + `styledegree` (0.01–2),
+#     so the hard tier actually sounds forceful. NOTE: Kavya is a hi-IN voice; it
+#     is best suited to Hindi/Hinglish collections calls.
+_VOICE_DIYA = "en-IN-Diya:DragonHDV2.3Neural"
+_VOICE_KAVYA_MAI = "hi-IN-Kavya:MAI-Voice-2"
+TONE_VOICE = {
+    "cordial":    {"name": _VOICE_DIYA, "style": "empathetic", "pitch": "call center slightly fast", "rate": "adaptive", "volume": "-5%"},
+    "firm":       {"name": _VOICE_DIYA, "style": "serious",    "pitch": "slightly fast", "rate": "adaptive", "volume": "+0%"},
+    "stern":      {"name": _VOICE_DIYA, "style": "angry",    "pitch": "slightly fast",    "rate": "adaptive", "volume": "+10%"},
+    "aggressive": {"name": _VOICE_KAVYA_MAI, "style": "shouting", "styledegree": "2", "pitch": "slightly fast", "rate": "1.05", "volume": "+10%"},
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Logging
 # ──────────────────────────────────────────────────────────────────────────────
@@ -143,14 +229,18 @@ _token_expiry = 0  # epoch seconds
 def build_session_config(
     campaign_key: str,
     customer_name: str = "",
+    tone: str = DEFAULT_TONE,
 ) -> dict:
     """
     Build the session.update payload for an outbound campaign agent.
-    Assembles: customer context header + lean base prompt + playbook workflow,
-    and filters tools to only what the playbook needs.
+    Assembles: customer context header + lean base prompt + playbook workflow +
+    operator-selected tonality, and filters tools to only what the playbook needs.
     """
     campaign = get_campaign(campaign_key)
     base_prompt = campaign["prompt"]
+    # Brand the agent speaks under — defaults to the bank, overridden per campaign
+    # (e.g. the life-insurance campaigns speak as "Contoso Life").
+    company = campaign.get("company", "Contoso Bank")
 
     # Look up the campaign's playbook + its required tool names
     playbook_text, playbook_tool_names = get_playbook(campaign_key)
@@ -163,34 +253,34 @@ def build_session_config(
     # Universal guardrail — appended to every agent's instructions
     instructions += (
         "\n\n# CRITICAL: NEVER EXPOSE TOOL OR FUNCTION NAMES\n"
-        "- NEVER say tool names, function names, or API names to the customer. "
-        "Examples of what you must NEVER say: 'get_preapproved_offers', 'assess_collateral', 'get_card_dues', 'get_settlement_options', etc.\n"
-        "- Instead of 'Let me call get_preapproved_offers', say 'Let me pull up the offer we have for you.'\n"
-        "- Instead of 'Running get_settlement_options', say 'Let me see what options I can offer you.'\n"
-        "- A real bank officer would NEVER say function names. Speak naturally.\n"
+        "- NEVER say tool, function, or API names to the customer — anything with underscores or a "
+        "code-like shape (e.g. names starting with get_, calculate_, assess_, record_, send_).\n"
+        "- Instead of naming a tool, say something natural: 'Let me pull that up for you' or "
+        "'Let me quickly check what I can offer you.'\n"
+        "- A real officer would NEVER say function names. Speak naturally.\n"
     )
 
     # Universal delivery style — makes the agent sound like a human, not a bot.
+    # Domain-neutral: each campaign's own prompt carries its product specifics.
     instructions += (
         "\n\n# DELIVERY — SOUND LIKE A HUMAN, NOT A BOT\n"
         "- ASK BEFORE YOU EXPLAIN — when the customer asks 'how does it work' / 'tell me more', "
-        "or before you can quantify anything, do NOT dump product specs (funding %, tenure, "
-        "rate, processing fee) in one breath. FIRST collect the inputs you need by asking ONE "
-        "short question at a time — e.g. new or used car, which car / on-road price, how much "
-        "loan they need, when they plan to buy. Gather their inputs, THEN give ONE tailored line.\n"
+        "or before you can quantify anything, do NOT dump a paragraph of specs in one breath. "
+        "FIRST collect what you need by asking ONE short question at a time; gather their inputs, "
+        "THEN give ONE tailored line.\n"
         "- WHEN GATHERING INFO, keep the turn to ONE short question (max 1–2 sentences). Do NOT "
         "precede the question with a paragraph of explanation. Question first, details later.\n"
-        "- DRIP information — share ONE number or ONE benefit per turn, then pause and ask a "
-        "question or check reaction. Do NOT stack multiple EMIs, rates, and figures into a "
-        "single reply. Never quote more than one EMI or one rate in a turn.\n"
-        "- ROUND spoken money — say 'about eighteen and a half thousand a month' or 'around "
-        "₹18,500', never exact paise like '₹18,661'. Precision to the rupee sounds computed.\n"
+        "- DRIP information — share ONE number or ONE benefit per turn, then pause and check "
+        "reaction. Do NOT stack multiple figures or quotes into a single reply. Never quote more "
+        "than one price/figure in a turn.\n"
+        "- ROUND spoken money — say 'around ₹18,500' or 'about eighteen and a half thousand', "
+        "never exact paise like '₹18,661'. Precision to the rupee sounds computed.\n"
         "- Be a CONVERSATIONAL CHAMELEON — match the customer's pace and energy. If they sound "
         "rushed, keep it short. If they hesitate, slow down and simplify. Use light back-channels "
         "('right', 'got it', 'makes sense') so they feel heard.\n"
         "- VARY your close and only push once interest shows. Do NOT end every turn with the same "
-        "'Shall I proceed / start the application?' Read their temperature first, then make a "
-        "specific, low-friction next-step offer.\n"
+        "'Shall I proceed?' Read their temperature first, then make a specific, low-friction "
+        "next-step offer.\n"
         "- Keep turns to 2–3 short sentences. This is a live phone call, not a monologue.\n"
     )
 
@@ -205,13 +295,17 @@ def build_session_config(
         "Never start a wait in Hindi and then deliver the answer in English — that confuses the "
         "customer. Pick the customer's language and stay in it for the entire turn.\n"
         "- If the customer switches language mid-call, switch with them on your very next turn.\n"
+        "- NEVER switch languages on your own — only change language if the CUSTOMER changes first. "
+        "If the customer has spoken only English, you MUST stay in English for the ENTIRE call, "
+        "including every hold announcement, every 'let me check' filler, and your reply after the "
+        "hold music. A hold or a tool/data lookup is NEVER a reason to switch languages.\n"
         "- Do NOT splice full English clauses into a Hindi sentence (e.g. 'मैं समझ रही हूँ, and I "
-        "want to be transparent'). Say it in Hindi. Only keep short fixed product terms (EMI, "
-        "interest rate, processing fee, pre-approved) in English.\n"
+        "want to be transparent'). Say it in Hindi. Only keep short fixed product/industry terms "
+        "(e.g. premium, EMI, interest rate, pre-approved) in English.\n"
         "- After a tool result, hold music, or any system prompt, STILL reply in the customer's "
         "current language — a tool/data lookup is never a reason to switch to English.\n"
-        "- Hinglish is fine when the customer mixes — keep loan terms (EMI, interest rate, "
-        "pre-approved) in English but frame the sentence in Hindi if that is how they speak.\n"
+        "- Hinglish is fine when the customer mixes — keep short product terms (e.g. premium, EMI, "
+        "interest rate, pre-approved) in English but frame the sentence in Hindi if that is how they speak.\n"
         "- YOU ARE A WOMAN — speak with FEMININE grammar. In Hindi/Hinglish, verbs and "
         "self-references must take the feminine form when you refer to yourself. Say "
         "'मैं बता रही हूँ' (not 'बता रहा हूँ'), 'मैं कर दूँगी' / 'भेज दूँगी' (not 'करूँगा' / "
@@ -249,14 +343,20 @@ def build_session_config(
         "- ALWAYS confirm briefly BEFORE escalating — e.g. 'I'll escalate this to a senior "
         "officer who will call you back — is that okay?'. Only call the tool once they agree "
         "(or clearly demand a human).\n"
-        "- When you call `escalate_to_human`, in the SAME turn tell the customer: 'I've noted "
-        "your request and I'm escalating this to a human agent who will call you back shortly.' "
-        "Then STOP — the call ends automatically. Do NOT promise any specific outcome the human "
-        "has not approved.\n"
+        "- When you call `escalate_to_human` for an UNRESOLVED case, in the SAME turn tell the "
+        "customer you've noted their issue and escalated it to a human senior officer, and that "
+        "they will receive a CALL BACK shortly — it is a callback, NOT a live transfer, so NEVER "
+        "say 'hold on while I connect you' or imply someone is joining the line right now. Then "
+        "ask whether they need anything else, and if not, whether you may close the call; only "
+        "call `end_call` after they agree. Do NOT promise any specific outcome the human has not "
+        "approved.\n"
         "- ALSO use `escalate_to_human` with escalation_type='resolved_handoff' at the END of a "
         "SUCCESSFULLY resolved call when a human must action the next steps (e.g. process a "
-        "disbursal, verify documents, honour a recorded promise-to-pay). In that case thank the "
-        "customer warmly and say you've passed the details to the team for follow-up.\n"
+        "disbursal, verify documents, honour a recorded promise-to-pay). A resolved_handoff does "
+        "NOT end the call by itself: thank the customer warmly, tell them you've passed the "
+        "details to the team for follow-up, and THEN ask whether there's anything else you can "
+        "help with or whether you may end the call. Do NOT hang up until they confirm — once they "
+        "do, follow the ENDING THE CALL flow (short warm farewell, then `end_call`).\n"
         "- Provide a clear `summary` and concrete `action_items` (next steps) whenever you "
         "escalate — this is what the human agent receives.\n"
         "- FIELD DISCIPLINE: `reason` is a short human-readable sentence explaining WHY you "
@@ -265,6 +365,30 @@ def build_session_config(
         "'unresolved' in `reason`; those values belong ONLY in `escalation_type`.\n"
     )
 
+    # Operator-selected tonality — shapes HOW firmly the agent speaks. In
+    # collections the tone escalates with contact attempts / days past due; the
+    # compliance floor keeps even the stern tone within fair-practices limits.
+    tone_key = tone if tone in TONE_INSTRUCTIONS else DEFAULT_TONE
+    instructions += TONE_INSTRUCTIONS[tone_key]
+    # if tone_key != "cordial":
+    #     instructions += TONE_COMPLIANCE_FLOOR
+
+    # Build the per-tone TTS voice config. The aggressive tier switches to a
+    # style-capable voice (Kavya / MAI-Voice-2) that honours the explicit
+    # `style` + `styledegree`; the other tones stay on Diya.
+    _tv = TONE_VOICE[tone_key]
+    voice_cfg = {
+        "name": _tv["name"],
+        "type": "azure-standard",
+        "temperature": 0.6,
+        "style": _tv["style"],
+        "pitch": _tv["pitch"],
+        "rate": _tv["rate"],
+        "volume": _tv["volume"],
+    }
+    if _tv.get("styledegree"):
+        voice_cfg["styledegree"] = _tv["styledegree"]
+
     # Inject customer name as context (the opening line is handled by response.create)
     if customer_name:
         first_name = customer_name.split()[0]
@@ -272,7 +396,8 @@ def build_session_config(
             f"CUSTOMER YOU ARE CALLING: {customer_name}\n"
             f"Address the customer as {first_name}. This is an OUTBOUND call that YOU placed. "
             f"Your VERY FIRST turn is the opening: greet {first_name}, introduce yourself by name "
-            f"AND state you are calling from Contoso Bank, give the reason, and ask permission. "
+            f"AND state you are calling from {company} (say exactly '{company}', never any other "
+            f"company name), give the reason, and ask permission. "
             f"On EVERY turn AFTER that opening, do NOT greet or re-introduce yourself again.\n\n"
             + instructions
         )
@@ -306,7 +431,7 @@ def build_session_config(
                 "latency_threshold_ms": 2000,
                 "max_completion_tokens": 30,
                 "instructions": (
-                    "You are a warm Contoso Bank phone agent. Produce ONE very short, "
+                    f"You are a warm phone agent for {company}. Produce ONE very short, "
                     "natural filler to cover a brief wait while data loads — e.g. "
                     "'Let me quickly pull that up…', 'One moment, checking that for you…', "
                     "'Give me a second…'. Match the customer's language (English or Hindi). "
@@ -319,14 +444,18 @@ def build_session_config(
                 "model": "azure-speech",
                 "language": "en-IN,hi-IN",
                 "phrase_list": [
-                    "Contoso Bank", "credit card", "debit card",
+                    "Contoso Bank", "Contoso Life", "credit card", "debit card",
                     "home loan", "car loan", "vehicle loan", "balance transfer",
                     "pre-approved", "preapproved", "processing fee", "top-up loan",
                     "EMI", "CIBIL", "KYC", "UPI", "NEFT", "RTGS", "IMPS",
                     "interest rate", "outstanding", "minimum due", "overdue",
                     "late fee", "settlement", "promise to pay", "payment link",
-                    "Priya", "Kavya", "Neha",
-                    "प्रिया", "काव्या", "नेहा",
+                    "life insurance", "life cover", "term insurance", "term plan",
+                    "sum assured", "premium", "policy", "nominee", "maturity",
+                    "grace period", "revival", "lapsed", "paid-up", "underwriting",
+                    "medical check-up", "free-look period",
+                    "Priya", "Kavya", "Neha", "Meera", "Ananya", "Anjali",
+                    "प्रिया", "काव्या", "नेहा", "मीरा", "अनन्या", "अंजली",
                 ],
             },
             # ── Noise / echo handling ────────────────────────────────────
@@ -339,15 +468,7 @@ def build_session_config(
                 "channels": 1
             },
             # ── TTS voice ────────────────────────────────────────────────
-            "voice": {
-            "name": "en-IN-Diya:DragonHDV2.3Neural",
-            "type": "azure-standard",
-            "temperature": 0.8,
-            "style": "empathetic",
-            "pitch": "call center slightly fast",
-            "rate": "adaptive",
-            "volume": "-5%"
-        },
+            "voice": voice_cfg,
             "input_audio_sampling_rate": 24000,
             # ── Model behaviour ──────────────────────────────────────────
             # "temperature": 0.1,
@@ -460,6 +581,7 @@ class VoiceLiveSession:
         browser_ws,
         customer_id: str = "rajesh",
         campaign_key: str = DEFAULT_CAMPAIGN,
+        tone: str = DEFAULT_TONE,
     ):
         self.browser_ws = browser_ws
         self.vl_ws: Any = None
@@ -467,6 +589,7 @@ class VoiceLiveSession:
         self._user_speech_end_ts = None
         self._first_audio_latency_logged = False
         self._campaign_key = campaign_key if campaign_key in CAMPAIGN_REGISTRY else DEFAULT_CAMPAIGN
+        self._tone = tone if tone in TONE_INSTRUCTIONS else DEFAULT_TONE
         self._agent_name = CAMPAIGN_REGISTRY[self._campaign_key]["name"]
         self._call_id = str(uuid.uuid4())[:8]
         self._customer_id = customer_id
@@ -474,6 +597,7 @@ class VoiceLiveSession:
         self._response_active = False  # True while a response is being generated
         self._pending_response_create = False  # deferred response.create
         self._pending_hold_music: int | None = None  # deferred hold music duration
+        self._hold_announced: bool = False  # True once a spoken hold announcement has been forced/confirmed
         self._last_vl_event_ts: float = time.monotonic()  # heartbeat tracking
         self._response_watchdog: asyncio.Task | None = None  # safety net for dead sessions
         self._last_transcription_empty: bool = True  # track if last speech had real content
@@ -492,6 +616,9 @@ class VoiceLiveSession:
         self._response_audio_bytes: int = 0  # audio bytes sent in current response
         self._response_truncated: bool = False  # set when truncated fires before transcript.done
         self._truncation_audio_end_ms: int = 0  # audio_end_ms from the truncation event
+        # ── Follow-up email state ─────────────────────────────────────────────
+        self._handoff_email_sent: bool = False  # True once any escalation/handoff email is sent
+        self._recorded_ptp: dict | None = None  # last promise-to-pay details (for the handoff email)
         # ── Call termination state ────────────────────────────────────────────
         self._call_ended: bool = False  # True once we've begun tearing the call down
         self._pending_end_call: bool = False  # agent asked to hang up; fire on response.done
@@ -555,17 +682,22 @@ class VoiceLiveSession:
 
         # Configure the session with the selected campaign agent + playbook
         await self._send_json(
-            build_session_config(self._campaign_key, customer_name=self._customer_name)
+            build_session_config(
+                self._campaign_key,
+                customer_name=self._customer_name,
+                tone=self._tone,
+            )
         )
 
         # Trigger the OUTBOUND opening: the agent introduces itself and states
         # the purpose of the call, then asks permission to proceed.
         campaign = CAMPAIGN_REGISTRY[self._campaign_key]
         first_name = self._customer_name.split()[0] if self._customer_name else "there"
+        company = campaign.get("company", "Contoso Bank")
         opening_instructions = (
             f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
             f"You MUST introduce yourself first — say clearly 'Hi {first_name}, this is "
-            f"{campaign['agent_name']} calling from Contoso Bank.' Do not skip your name or the bank. "
+            f"{campaign['agent_name']} calling from {company}.' Do not skip your name or the company. "
             f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
             f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
             f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
@@ -878,6 +1010,7 @@ class VoiceLiveSession:
                             if self._pending_hold_music is not None:
                                 logger.info("[%s] Clearing pending hold music (response was cancelled)", self._call_id)
                                 self._pending_hold_music = None
+                                self._hold_announced = False
                             self._pending_response_create = False
                         elif status != "completed":
                             logger.error(
@@ -888,28 +1021,61 @@ class VoiceLiveSession:
 
                         # Play deferred hold music AFTER agent finishes speaking
                         if self._pending_hold_music is not None:
-                            duration = self._pending_hold_music
-                            self._pending_hold_music = None
-                            logger.info("[%s] 🎵 Playing hold music (%ds)", self._call_id, duration)
-                            await self._send_to_browser(
-                                json.dumps({"Kind": "PlayHoldMusic", "Duration": duration})
-                            )
-                            await asyncio.sleep(duration)
-                            logger.info("[%s] 🎵 Hold music finished, injecting thank-for-waiting instruction", self._call_id)
-                            # Inject a system hint so the model thanks the customer for waiting
-                            await self._send_json({
-                                "type": "conversation.item.create",
-                                "item": {
-                                    "type": "message",
-                                    "role": "user",
-                                    "content": [{
-                                        "type": "input_text",
-                                        "text": "[System: Hold music has ended. Reply in the SAME language the customer has been speaking (do NOT switch to English). Begin by thanking the customer for waiting, then deliver your answer.]",
-                                    }],
-                                },
-                            })
-                            # Use safe create — VAD may have already started a response
-                            await self._safe_response_create()
+                            # ── Deterministic consent: never start hold music
+                            # unless the agent actually SPOKE a hold announcement
+                            # in this response. If the model called
+                            # play_hold_music silently, force a brief spoken
+                            # announcement first and play the music on the NEXT
+                            # response.done. Guarded to fire the forced
+                            # announcement at most once, so a mis-behaving model
+                            # can't loop the music forever.
+                            MIN_ANNOUNCE_BYTES = 24000  # ~0.5s of PCM16 @ 24kHz speech
+                            if (
+                                self._response_audio_bytes < MIN_ANNOUNCE_BYTES
+                                and not self._hold_announced
+                            ):
+                                self._hold_announced = True
+                                logger.info(
+                                    "[%s] 🎵 Hold requested without a spoken announcement "
+                                    "(%d audio bytes) — forcing announcement before music",
+                                    self._call_id, self._response_audio_bytes,
+                                )
+                                await self._send_json({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": "[System: You are about to place the customer on hold. BEFORE the hold music starts you MUST tell the customer — in the EXACT SAME language you have both been speaking in this call, do NOT change languages (if the customer has been speaking English, stay in English) — that you're placing them on hold for a moment while you check. Say ONLY that brief hold announcement now. Do NOT answer their question yet and do NOT call any tool.]",
+                                        }],
+                                    },
+                                })
+                                await self._safe_response_create()
+                            else:
+                                duration = self._pending_hold_music
+                                self._pending_hold_music = None
+                                self._hold_announced = False  # reset for the next hold
+                                logger.info("[%s] 🎵 Playing hold music (%ds)", self._call_id, duration)
+                                await self._send_to_browser(
+                                    json.dumps({"Kind": "PlayHoldMusic", "Duration": duration})
+                                )
+                                await asyncio.sleep(duration)
+                                logger.info("[%s] 🎵 Hold music finished, injecting thank-for-waiting instruction", self._call_id)
+                                # Inject a system hint so the model thanks the customer for waiting
+                                await self._send_json({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": "[System: Hold music has ended. Reply in the EXACT SAME language you have both been speaking in this call — do NOT change languages (if the customer has been speaking English, stay in English). Begin by thanking the customer for waiting, then deliver your answer.]",
+                                        }],
+                                    },
+                                })
+                                # Use safe create — VAD may have already started a response
+                                await self._safe_response_create()
                         # Fire deferred response.create (from handoff or tool calls)
                         elif self._pending_response_create:
                             self._pending_response_create = False
@@ -1107,10 +1273,11 @@ class VoiceLiveSession:
             # completes on its own, and termination fires on response.done.
 
         elif fn_name == "escalate_to_human":
-            # ── Hand the call off to a human agent (email) then hang up ──
-            # Sends a summary + action items + transcript to the human agent,
-            # shows an escalation banner in the browser, then ends the call
-            # via the same deferred-farewell path as end_call.
+            # ── Hand the call off to a human agent (email) ──────────────
+            # Sends a summary + action items + transcript to the human agent
+            # and shows an escalation banner in the browser. The call is NOT
+            # ended here: the agent confirms the hand-off, then asks the
+            # customer's permission to close, and only then ends via end_call.
             try:
                 args = json.loads(args_str) if args_str.strip() else {}
             except json.JSONDecodeError:
@@ -1136,6 +1303,10 @@ class VoiceLiveSession:
                 result = {"error": str(exc), "reference": "", "priority": "medium"}
 
             ref = result.get("reference", "")
+            if not result.get("error"):
+                # An escalation/handoff email went out — suppress the
+                # deterministic fallback email at call termination.
+                self._handoff_email_sent = True
             logger.info(
                 "[%s] 🚨 Escalation (%s) → %s | ticket=%s | delivery=%s",
                 self._call_id, esc_type, result.get("email_to", ""),
@@ -1152,40 +1323,62 @@ class VoiceLiveSession:
                 "EmailTo": result.get("email_to", ""),
             }))
 
-            # Schedule the graceful hang-up (fires after the spoken confirmation)
-            self._pending_end_call = True
-            self._end_call_explicit = True  # committed hang-up — barge-in won't cancel it
-            self._end_call_reason = (
-                f"Escalated to a human agent — ticket {ref}." if ref
-                else "Escalated to a human agent."
-            )
-
             if esc_type == "resolved_handoff":
-                spoken = (
-                    "Warmly thank the customer and tell them you've passed a summary and the "
-                    "next steps to the team who will follow up. "
-                )
+                # Successful close: the team is notified (email + ticket already
+                # sent above), but we do NOT hang up here. Let the agent wrap up
+                # naturally — thank the customer, mention the follow-up, then ask
+                # permission to end. The actual hang-up goes through the normal
+                # end_call flow once the customer confirms.
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps({
+                            "status": "handed_off",
+                            "reference": ref,
+                            "message": (
+                                "Warmly thank the customer and tell them you've passed a summary "
+                                "and the next steps to the team who will follow up. Then ASK "
+                                "whether there's anything else you can help with, or whether you "
+                                "may end the call. Do NOT call end_call yet and do NOT hang up — "
+                                "wait for their answer. Do NOT promise any specific outcome the "
+                                "team has not approved. Say it in the customer's language."
+                            ),
+                        }),
+                    },
+                })
+                # Let the model speak the hand-off confirmation + permission-to-end ask.
+                await self._safe_response_create()
             else:
-                spoken = (
-                    "Tell the customer: 'I've noted your request and I'm escalating this to a "
-                    "human agent who will call you back shortly.' "
-                )
-            await self._send_json({
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": json.dumps({
-                        "status": "escalated",
-                        "reference": ref,
-                        "message": spoken + "Say it in the customer's language, then STOP. The "
-                                   "call ends automatically once you finish. Do NOT promise any "
-                                   "specific outcome or ask further questions.",
-                    }),
-                },
-            })
-            # Do NOT trigger response.create — the current response finishes
-            # with the spoken confirmation; termination fires on response.done.
+                # Unresolved escalation: the customer wants a human / is frustrated.
+                # The team is notified (email + ticket sent above). We do NOT hang
+                # up here — the agent confirms the callback, then asks permission to
+                # close. The actual hang-up goes through the normal end_call flow.
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps({
+                            "status": "escalated",
+                            "reference": ref,
+                            "message": (
+                                "Tell the customer, warmly, that you've NOTED their issue and "
+                                "escalated it to a human senior officer, and that they will "
+                                "receive a CALL BACK shortly. It is a callback, NOT a live "
+                                "transfer — do NOT say 'hold on while I connect you' or imply "
+                                "anyone is joining the line now. Then ASK whether they need "
+                                "anything else, and if not, whether you may close the call. Do "
+                                "NOT call end_call yet and do NOT hang up — wait for their "
+                                "answer. Do NOT promise any specific outcome the team has not "
+                                "approved. Say it in the customer's language."
+                            ),
+                        }),
+                    },
+                })
+                # Let the model speak the escalation confirmation + permission-to-end ask.
+                await self._safe_response_create()
 
         elif fn_name in TOOL_FUNCTIONS:
             # ── CRM data tool call ───────────────────────────────────────
@@ -1211,6 +1404,20 @@ class VoiceLiveSession:
             except Exception as exc:
                 logger.exception("[%s] CRM tool error: %s", self._call_id, fn_name)
                 result = {"error": str(exc)}
+
+            # Capture a recorded promise-to-pay so the deterministic follow-up
+            # email at call end can include the commitment details.
+            if (
+                fn_name == "record_payment_commitment"
+                and isinstance(result, dict)
+                and not result.get("error")
+            ):
+                self._recorded_ptp = {
+                    "amount": result.get("amount"),
+                    "promise_date": result.get("promise_date"),
+                    "method": result.get("method"),
+                    "reference": result.get("reference"),
+                }
 
             logger.info(
                 "[%s] Tool %s → %d chars",
@@ -1352,6 +1559,65 @@ class VoiceLiveSession:
         except Exception:
             logger.exception("[%s] Idle monitor error", self._call_id)
 
+    async def _send_fallback_handoff_email(self):
+        """
+        Deterministic safety net: if the call is ending and NO follow-up email
+        has been sent this session, e-mail a resolved-handoff summary to the
+        human team so a recovery/commitment call always produces a follow-up.
+        Runs the blocking send off the event loop and never raises.
+        """
+        if self._handoff_email_sent:
+            return
+        self._handoff_email_sent = True  # guard against double-send / re-entry
+        try:
+            from crm_tools import send_escalation
+
+            ptp = self._recorded_ptp
+            if ptp:
+                amount = ptp.get("amount")
+                amount_str = f"₹{amount:,.0f}" if isinstance(amount, (int, float)) else str(amount)
+                reason = "Promise-to-pay recorded — a human must follow up to ensure it is honoured."
+                summary = (
+                    f"Customer committed to pay {amount_str} by "
+                    f"{ptp.get('promise_date', 'the agreed date')} via "
+                    f"{ptp.get('method', 'the agreed method')} "
+                    f"(reference {ptp.get('reference', 'n/a')}). "
+                    "Auto-generated at call end because no follow-up email was sent during the call."
+                )
+                action_items = [
+                    f"Confirm payment of {amount_str} on/around {ptp.get('promise_date', 'the promised date')}",
+                    "Escalate if the payment is not received by the promised date",
+                ]
+            else:
+                reason = "Auto-generated end-of-call summary — no follow-up email was sent during the call."
+                summary = (
+                    "Call ended without a recorded commitment or escalation. "
+                    "Review the transcript and decide on next steps."
+                )
+                action_items = [
+                    "Review the call transcript",
+                    "Decide whether a follow-up contact is needed",
+                ]
+
+            result = await asyncio.to_thread(
+                send_escalation,
+                customer_id=self._customer_id,
+                campaign=get_campaign(self._campaign_key).get("title", self._campaign_key),
+                agent=self._agent_name,
+                reason=reason,
+                summary=summary,
+                action_items=action_items,
+                priority="medium",
+                escalation_type="resolved_handoff",
+                transcript=list(self._transcript_log),
+            )
+            logger.info(
+                "[%s] 📧 Auto follow-up email sent at call end | ticket=%s | delivery=%s",
+                self._call_id, result.get("reference", ""), result.get("delivery", ""),
+            )
+        except Exception:
+            logger.exception("[%s] Auto follow-up email failed", self._call_id)
+
     async def _terminate_call(self, reason: str):
         """
         Tear the call down: let the farewell audio drain, tell the browser to
@@ -1373,10 +1639,18 @@ class VoiceLiveSession:
         await self._send_to_browser(
             json.dumps({"Kind": "EndCall", "Reason": reason, "GraceMs": grace_ms})
         )
+        # Deterministic follow-up: if no email went out this session, send one
+        # now (concurrently with the farewell grace period) so a recovery /
+        # commitment call always yields a human follow-up.
+        email_task = asyncio.create_task(self._send_fallback_handoff_email())
         # Stop the idle watchdog if it's still running.
         if self._idle_monitor and not self._idle_monitor.done():
             self._idle_monitor.cancel()
         await asyncio.sleep(grace_s)
+        try:
+            await asyncio.wait_for(email_task, timeout=10)
+        except Exception:
+            pass
         if self.vl_ws:
             try:
                 await self.vl_ws.close()
@@ -1621,13 +1895,16 @@ async def api_customers():
     rows = _query(
         "SELECT c.id, c.name, c.segment, c.city, c.phone, "
         "(SELECT COUNT(*) FROM collections cl WHERE cl.customer_id = c.id) AS card_overdue, "
-        "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue "
+        "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue, "
+        "(SELECT COUNT(*) FROM life_policies lp WHERE lp.customer_id = c.id "
+        "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue "
         "FROM customers c ORDER BY c.name"
     )
     for r in rows:
         r["card_overdue"] = bool(r.get("card_overdue"))
         r["loan_overdue"] = bool(r.get("loan_overdue"))
-        r["overdue"] = r["card_overdue"] or r["loan_overdue"]
+        r["premium_overdue"] = bool(r.get("premium_overdue"))
+        r["overdue"] = r["card_overdue"] or r["loan_overdue"] or r["premium_overdue"]
     return jsonify(rows)
 
 
@@ -1637,7 +1914,7 @@ async def web_ws():
     Browser WebSocket endpoint.
 
     Protocol:
-        Browser → Server:  first text msg = JSON {"campaignId": "...", "customerId": "..."}
+        Browser → Server:  first text msg = JSON {"campaignId": "...", "customerId": "...", "tone": "..."}
                            then raw PCM16 bytes (ArrayBuffer)
         Server → Browser:  raw PCM16 bytes (TTS audio)
                            OR JSON: {"Kind": "StopAudio"}
@@ -1653,19 +1930,24 @@ async def web_ws():
     # First text message from browser carries the campaign + customer selection
     customer_id = "rajesh"  # default fallback
     campaign_id = DEFAULT_CAMPAIGN
+    tone = DEFAULT_TONE
     try:
         first_msg = await websocket.receive()
         if isinstance(first_msg, str):
             data = json.loads(first_msg)
             customer_id = data.get("customerId", "rajesh")
             campaign_id = data.get("campaignId", DEFAULT_CAMPAIGN)
-            logger.info("Call setup — campaign=%s customer=%s", campaign_id, customer_id)
+            tone = data.get("tone", DEFAULT_TONE)
+            logger.info(
+                "Call setup — campaign=%s customer=%s tone=%s",
+                campaign_id, customer_id, tone,
+            )
     except Exception:
         pass
 
     # Pass the pre-started auth task to the session
     session = VoiceLiveSession(
-        websocket, customer_id=customer_id, campaign_key=campaign_id
+        websocket, customer_id=customer_id, campaign_key=campaign_id, tone=tone
     )
     asyncio.create_task(session.start(auth_task=auth_task))
 

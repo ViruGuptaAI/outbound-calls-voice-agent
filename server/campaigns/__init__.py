@@ -13,8 +13,63 @@ from .vehicle_loan_collections_agent import (
     VEHICLE_LOAN_COLLECTIONS_PROMPT,
     VEHICLE_LOAN_COLLECTIONS_TOOLS,
 )
+from .life_insurance_agent import LIFE_INSURANCE_PROMPT, LIFE_INSURANCE_TOOLS
+from .life_insurance_collections_agent import (
+    LIFE_INSURANCE_COLLECTIONS_PROMPT,
+    LIFE_INSURANCE_COLLECTIONS_TOOLS,
+)
 
 CAMPAIGN_REGISTRY = {
+    "life_insurance": {
+        "prompt": LIFE_INSURANCE_PROMPT,
+        "agent_name": "Ananya",
+        "name": "Ananya (Life Insurance Advisor)",
+        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "tools": LIFE_INSURANCE_TOOLS,
+        # This campaign is a life insurer, not the bank — override the opening brand.
+        "company": "Contoso Life",
+        "title": "Life Insurance Sales",
+        "description": "Assess a family's protection gap and recommend the right life cover, savings, child or retirement plan.",
+        "icon": "\U0001F6E1\uFE0F",
+        "color": "#38a169",
+        "opening_purpose": (
+            "Your opening hook is a gentle, thought-provoking QUESTION you actually ASK — do NOT "
+            "replace it with a generic 'I help people…' statement, and do NOT mention any number. "
+            "Ask this (or a very close variant): 'Can I ask you one quick thing — if your income "
+            "were to stop tomorrow, how many months could your family comfortably manage the home "
+            "and the expenses?' Framed around love/responsibility, never morbid. This is life cover "
+            "(protecting the family's income), not health insurance — but do NOT turn the opening "
+            "into a definition."
+        ),
+        "opening_ask": (
+            "Then add a LOW-PRESSURE promise — e.g. 'Give me just two minutes, and if it's not "
+            "useful you can hang up on me.' Do NOT quote any cover amount or premium. LISTEN to "
+            "their answer and acknowledge it, then CONTINUE DISCOVERY — ask who depends on their "
+            "income and their rough annual income — BEFORE any cover figure. Never jump to the "
+            "number just because they said 'go ahead' or 'tell me'."
+        ),
+    },
+    "life_premium_recovery": {
+        "prompt": LIFE_INSURANCE_COLLECTIONS_PROMPT,
+        "agent_name": "Anjali",
+        "name": "Anjali (Policy Servicing Officer)",
+        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "tools": LIFE_INSURANCE_COLLECTIONS_TOOLS,
+        "company": "Contoso Life",
+        "title": "Life Insurance Premium Recovery",
+        "description": "Remind an existing policyholder about an overdue premium and help keep the policy in-force (or revive a lapsed one), respectfully.",
+        "icon": "\U0001F6DF",
+        "color": "#805ad5",
+        # Only offer this campaign for customers who actually hold an overdue policy.
+        "audience": "premium_overdue",
+        "opening_purpose": (
+            "You are calling an EXISTING policyholder about a pending premium on their LIFE "
+            "insurance policy (this is NOT a loan or credit card, and NOT health insurance). "
+            "You are helping them keep their family's cover from lapsing — a friendly reminder, "
+            "not a debt-collection call. Verify you are speaking to the right person before "
+            "sharing any policy details."
+        ),
+    },
     "home_loan": {
         "prompt": HOME_LOAN_PROMPT,
         "agent_name": "Priya",

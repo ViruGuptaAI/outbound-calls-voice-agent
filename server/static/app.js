@@ -18,8 +18,17 @@ const CALL = (() => {
 })();
 const CAMPAIGN_ID = CALL.campaignId || 'home_loan';
 const CUSTOMER_ID = CALL.customerId || 'rajesh';
+const CALL_TONE = CALL.tone || 'cordial';
 const AGENT_NAME = CALL.agentName || 'Agent';
 const CAMPAIGN_COLOR = CALL.campaignColor || '#4299e1';
+
+// Short labels for displaying the selected tone in the call sidebar.
+const TONE_LABELS = {
+    cordial: '🙂 Cordial',
+    firm: '💬 Firm',
+    stern: '⚠️ Stern',
+    aggressive: '🔴 Aggressive',
+};
 
 // Populate the call header/sidebar from context
 document.addEventListener('DOMContentLoaded', () => {
@@ -30,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
     set('call-agent', 'Agent: ' + AGENT_NAME);
     set('cust-name', CALL.customerName || CUSTOMER_ID);
     set('current-agent-label', AGENT_NAME);
+    set('call-tone', TONE_LABELS[CALL_TONE] || TONE_LABELS.cordial);
     const badge = document.getElementById('agent-badge');
     if (badge) {
         badge.textContent = (CALL.campaignIcon || '📞') + ' ' + AGENT_NAME;
@@ -118,8 +128,8 @@ async function startConversation() {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-        // Send campaign + customer selection as the first message
-        ws.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID }));
+        // Send campaign + customer selection (and tone) as the first message
+        ws.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID, tone: CALL_TONE }));
 
         updateStatus('connected');
         addSystemMessage('✅ Call connected — the agent is on the line.');
