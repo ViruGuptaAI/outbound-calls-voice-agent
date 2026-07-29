@@ -11,6 +11,48 @@ const launchBtn = document.getElementById('btn-launch');
 const hintEl = document.getElementById('launch-hint');
 const toneEl = document.getElementById('tone-select');
 const toneHintEl = document.getElementById('tone-hint');
+const langEl = document.getElementById('lang-select');
+const langHintEl = document.getElementById('lang-hint');
+
+// ── Language selector (multi-select, up to 3, order = priority) ───
+// The FIRST language picked is the one the bot opens in; it can switch
+// among all chosen languages. Selection order is tracked so "primary"
+// reflects what the operator picked first.
+const LANG_LABELS = {
+    english: 'English (India)', hindi: 'Hindi', marathi: 'Marathi', kannada: 'Kannada',
+    telugu: 'Telugu', tamil: 'Tamil', gujarati: 'Gujarati', odia: 'Odia (Oriya)',
+    bengali: 'Bengali', malayalam: 'Malayalam',
+};
+const MAX_LANGS = 3;
+let langOrder = ['english', 'hindi']; // default selection order (primary first)
+
+function updateLangHint() {
+    if (!langHintEl) return;
+    if (!langOrder.length) {
+        langHintEl.textContent = 'Pick at least one language (default: English + Hindi).';
+        return;
+    }
+    const primary = LANG_LABELS[langOrder[0]];
+    const others = langOrder.slice(1).map(k => LANG_LABELS[k]);
+    langHintEl.textContent = others.length
+        ? `Opens in ${primary}; can also switch to ${others.join(', ')}.`
+        : `The whole call will be in ${primary}.`;
+}
+
+if (langEl) {
+    langEl.addEventListener('change', () => {
+        const selected = Array.from(langEl.selectedOptions).map(o => o.value);
+        // Preserve prior order for still-selected items, then append newly picked ones.
+        langOrder = langOrder.filter(v => selected.includes(v));
+        selected.forEach(v => { if (!langOrder.includes(v)) langOrder.push(v); });
+        // Enforce the cap: keep the first MAX_LANGS picked; deselect the rest.
+        if (langOrder.length > MAX_LANGS) langOrder = langOrder.slice(0, MAX_LANGS);
+        Array.from(langEl.options).forEach(o => { o.selected = langOrder.includes(o.value); });
+        updateLangHint();
+    });
+    updateLangHint();
+}
+
 
 // ── Tone selector ────────────────────────────────────────────────
 // In collections, tonality escalates with contact attempts / days past due.
@@ -138,6 +180,7 @@ launchBtn.addEventListener('click', () => {
         campaignId: selectedCampaign,
         customerId: selectEl.value,
         tone: toneEl.value,
+        languages: langOrder.length ? langOrder.slice(0, MAX_LANGS) : ['english', 'hindi'],
         campaignTitle: campaignsById[selectedCampaign].title,
         agentName: campaignsById[selectedCampaign].agent,
         campaignIcon: campaignsById[selectedCampaign].icon,

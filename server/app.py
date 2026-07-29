@@ -141,6 +141,67 @@ TONE_VOICE = {
     "aggressive": {"name": _VOICE_KAVYA_MAI, "style": "shouting", "styledegree": "2", "pitch": "slightly fast", "rate": "1.05", "volume": "+10%"},
 }
 
+# ── Conversation languages (operator-selectable, multi-select up to 3) ────────
+# The operator picks which language(s) the bot may converse in. This drives:
+#   (1) the STT language-identification list (input_audio_transcription.language), and
+#   (2) a dynamic LANGUAGE POLICY block injected into the system message.
+# The TTS voice is NOT changed — the Diya (Dragon HD) voice already speaks all
+# these Indian regional languages, so it stays as the tone-selected voice.
+DEFAULT_LANGUAGES = ["english", "hindi"]
+LANGUAGE_REGISTRY = {
+    "english":   {"label": "English (India)", "locale": "en-IN"},
+    "hindi":     {"label": "Hindi",           "locale": "hi-IN"},
+    "marathi":   {"label": "Marathi",         "locale": "mr-IN"},
+    "kannada":   {"label": "Kannada",         "locale": "kn-IN"},
+    "telugu":    {"label": "Telugu",          "locale": "te-IN"},
+    "tamil":     {"label": "Tamil",           "locale": "ta-IN"},
+    "gujarati":  {"label": "Gujarati",        "locale": "gu-IN"},
+    "odia":      {"label": "Odia (Oriya)",    "locale": "or-IN"},
+    "bengali":   {"label": "Bengali",         "locale": "bn-IN"},
+    "malayalam": {"label": "Malayalam",       "locale": "ml-IN"},
+}
+MAX_LANGUAGES = 3
+
+
+def normalize_languages(languages) -> list[str]:
+    """Validate + de-dupe the operator's language selection, capped at MAX_LANGUAGES."""
+    if not languages:
+        return list(DEFAULT_LANGUAGES)
+    out: list[str] = []
+    for lang in languages:
+        key = str(lang).strip().lower()
+        if key in LANGUAGE_REGISTRY and key not in out:
+            out.append(key)
+        if len(out) >= MAX_LANGUAGES:
+            break
+    return out or list(DEFAULT_LANGUAGES)
+
+
+def _language_policy_block(lang_keys: list[str]) -> str:
+    """Build the dynamic LANGUAGE POLICY instruction from the selected languages."""
+    labels = [LANGUAGE_REGISTRY[k]["label"] for k in lang_keys]
+    primary = labels[0]
+    allowed = ", ".join(labels)
+    multi = len(labels) > 1
+    return (
+        "\n\n# LANGUAGE POLICY (operator-selected — OVERRIDES any 'open in English' default)\n"
+        f"- You may converse ONLY in these languages: {allowed}.\n"
+        f"- BEGIN the call in {primary}: your opening greeting and first question MUST be in {primary}.\n"
+        + (
+            "- If the customer replies in ANOTHER of these allowed languages, MIRROR them and continue "
+            "in that language. Keep your short fillers and your full answer in the SAME language.\n"
+            if multi else
+            "- Stay in this language for the whole call.\n"
+        )
+        + f"- If the customer uses a language NOT in this list, politely continue in {primary} "
+        "(or the closest allowed language) — NEVER use a language outside this set.\n"
+        "- Keep fixed product terms (premium, EMI, sum assured, pre-approved) in English even inside "
+        "a regional-language sentence.\n"
+        "- You are a WOMAN — always use FEMININE self-conjugations, in every language.\n"
+    )
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Logging
 # ──────────────────────────────────────────────────────────────────────────────
@@ -230,6 +291,7 @@ def build_session_config(
     campaign_key: str,
     customer_name: str = "",
     tone: str = DEFAULT_TONE,
+    languages: list[str] | None = None,
 ) -> dict:
     """
     Build the session.update payload for an outbound campaign agent.
@@ -241,6 +303,9 @@ def build_session_config(
     # Brand the agent speaks under — defaults to the bank, overridden per campaign
     # (e.g. the life-insurance campaigns speak as "Contoso Life").
     company = campaign.get("company", "Contoso Bank")
+    # Operator-selected conversation languages (validated; primary = first).
+    lang_keys = normalize_languages(languages)
+    lang_locales = ",".join(LANGUAGE_REGISTRY[k]["locale"] for k in lang_keys)
 
     # Look up the campaign's playbook + its required tool names
     playbook_text, playbook_tool_names = get_playbook(campaign_key)
@@ -373,6 +438,10 @@ def build_session_config(
     # if tone_key != "cordial":
     #     instructions += TONE_COMPLIANCE_FLOOR
 
+    # Operator-selected conversation languages — overrides any 'open in English'
+    # default and constrains the bot to the chosen language(s).
+    instructions += _language_policy_block(lang_keys)
+
     # Build the per-tone TTS voice config. The aggressive tier switches to a
     # style-capable voice (Kavya / MAI-Voice-2) that honours the explicit
     # `style` + `styledegree`; the other tones stay on Diya.
@@ -388,6 +457,10 @@ def build_session_config(
     }
     if _tv.get("styledegree"):
         voice_cfg["styledegree"] = _tv["styledegree"]
+
+    # NOTE: TTS voice is intentionally NOT changed per language — the Diya
+    # (Dragon HD) voice already speaks all the supported Indian regional
+    # languages, so it renders whatever language the model produces.
 
     # Inject customer name as context (the opening line is handled by response.create)
     if customer_name:
@@ -442,7 +515,7 @@ def build_session_config(
             # ── Input audio transcription ────────────────────────────────
             "input_audio_transcription": {
                 "model": "azure-speech",
-                "language": "en-IN,hi-IN",
+                "language": lang_locales,
                 "phrase_list": [
                     "Contoso Bank", "Contoso Life", "credit card", "debit card",
                     "home loan", "car loan", "vehicle loan", "balance transfer",
@@ -582,6 +655,7 @@ class VoiceLiveSession:
         customer_id: str = "rajesh",
         campaign_key: str = DEFAULT_CAMPAIGN,
         tone: str = DEFAULT_TONE,
+        languages: list[str] | None = None,
     ):
         self.browser_ws = browser_ws
         self.vl_ws: Any = None
@@ -590,6 +664,7 @@ class VoiceLiveSession:
         self._first_audio_latency_logged = False
         self._campaign_key = campaign_key if campaign_key in CAMPAIGN_REGISTRY else DEFAULT_CAMPAIGN
         self._tone = tone if tone in TONE_INSTRUCTIONS else DEFAULT_TONE
+        self._languages = normalize_languages(languages)
         self._agent_name = CAMPAIGN_REGISTRY[self._campaign_key]["name"]
         self._call_id = str(uuid.uuid4())[:8]
         self._customer_id = customer_id
@@ -686,6 +761,7 @@ class VoiceLiveSession:
                 self._campaign_key,
                 customer_name=self._customer_name,
                 tone=self._tone,
+                languages=self._languages,
             )
         )
 
@@ -694,14 +770,27 @@ class VoiceLiveSession:
         campaign = CAMPAIGN_REGISTRY[self._campaign_key]
         first_name = self._customer_name.split()[0] if self._customer_name else "there"
         company = campaign.get("company", "Contoso Bank")
+        primary_label = LANGUAGE_REGISTRY[self._languages[0]]["label"]
+        is_english = self._languages[0] == "english"
+        # Front-load a hard language mandate so the greeting is deterministic, not probabilistic.
+        lang_mandate = (
+            f"LANGUAGE — MANDATORY: Speak your ENTIRE opening (greeting AND question) in {primary_label}. "
+            + ("" if is_english else f"Every word must be in {primary_label}; do NOT use English at all. ")
+        )
+        greet_line = (
+            f"Introduce yourself first: warmly greet {first_name} and say you are "
+            f"{campaign['agent_name']} from {company} — phrased naturally in {primary_label}, "
+            f"not translated word-for-word. Do not skip your name or the company. "
+        )
         opening_instructions = (
-            f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
-            f"You MUST introduce yourself first — say clearly 'Hi {first_name}, this is "
-            f"{campaign['agent_name']} calling from {company}.' Do not skip your name or the company. "
-            f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
-            f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
-            f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
-            f"numbers or account details yet."
+            lang_mandate
+            + f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
+            + greet_line
+            + f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
+            + f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
+            + f"The example wording above is illustrative — say it in {primary_label}. "
+            + f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
+            + f"numbers or account details yet. Remember: the whole opening must be in {primary_label}."
         )
         await self._send_json({
             "type": "response.create",
@@ -1931,6 +2020,7 @@ async def web_ws():
     customer_id = "rajesh"  # default fallback
     campaign_id = DEFAULT_CAMPAIGN
     tone = DEFAULT_TONE
+    languages = None
     try:
         first_msg = await websocket.receive()
         if isinstance(first_msg, str):
@@ -1938,16 +2028,18 @@ async def web_ws():
             customer_id = data.get("customerId", "rajesh")
             campaign_id = data.get("campaignId", DEFAULT_CAMPAIGN)
             tone = data.get("tone", DEFAULT_TONE)
+            languages = data.get("languages")
             logger.info(
-                "Call setup — campaign=%s customer=%s tone=%s",
-                campaign_id, customer_id, tone,
+                "Call setup — campaign=%s customer=%s tone=%s languages=%s",
+                campaign_id, customer_id, tone, languages,
             )
     except Exception:
         pass
 
     # Pass the pre-started auth task to the session
     session = VoiceLiveSession(
-        websocket, customer_id=customer_id, campaign_key=campaign_id, tone=tone
+        websocket, customer_id=customer_id, campaign_key=campaign_id,
+        tone=tone, languages=languages,
     )
     asyncio.create_task(session.start(auth_task=auth_task))
 
