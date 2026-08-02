@@ -308,6 +308,18 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.assertNotIn("outcome", close)
         self.assertIn("postal pin code", close)
 
+    def test_unlisted_pin_is_serviceable_and_advances(self):
+        call_id = self.start_call()
+        self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
+        self.submit(call_id, "AVAILABILITY", "AVAILABLE")
+        self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "400024")
+        self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        result = validate_pin_code(call_id, self.customer_id, "400024")
+        self.assertEqual(result["status"], "SERVICEABLE")
+        self.assertEqual(
+            get_savings_runtime_context(call_id, self.customer_id)["call_state"], "AGE_CHECK"
+        )
+
     def test_dispatch_uses_server_state_and_blocks_second_transition(self):
         call_id = self.start_call()
         session = VoiceLiveSession(

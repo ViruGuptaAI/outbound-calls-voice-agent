@@ -126,16 +126,18 @@ _NEXT_ACTION = {
         "take it as CONFIRMED and move on."
     ),
     "KYC_PREPARATION": (
-        "State the approved KYC preparation once, briefly, then submit PRESENTED and move to the final "
-        "question. Do not ask again whether documents are available, and do not repeat the list."
+        "State the approved KYC preparation once, briefly, then IMMEDIATELY submit PRESENTED — do not ask "
+        "permission to proceed and never say 'क्या मैं आगे बढ़ाउँ?'. Do not ask again whether documents are "
+        "available, and do not repeat the list."
     ),
     "FINAL_QUESTION": (
-        "Ask once whether the customer has any other question. If they ask what happens next or who "
-        "completes the process, explain it clearly and warmly: this call gets their application ready, "
-        "and a member of our team will then call them shortly to complete the KYC and open the account, "
-        "so they should keep their original PAN and Aadhaar handy. Do not repeat the KYC list. Once they "
-        "have no more questions or say to proceed, submit NO_MORE_QUESTIONS and finalize confidently — do "
-        "not keep asking whether to close."
+        "Ask the one concrete question 'क्या आपका कोई और सवाल है?' (do you have any other question?) — "
+        "never a vague 'क्या मैं आगे बढ़ाउँ?' or 'shall I proceed?'. If they ask what happens next or who "
+        "completes the process, explain clearly and warmly: this call gets their application ready, and a "
+        "member of our team will then call them shortly to complete the KYC and open the account, so they "
+        "should keep their original PAN and Aadhaar handy. Do not repeat the KYC list. As soon as they have "
+        "no further question — including 'नहीं', 'करो', 'कर दो', 'आगे बढ़ाओ', 'go ahead', or 'proceed' — submit "
+        "NO_MORE_QUESTIONS and finalize confidently. Never keep re-asking whether to proceed or to close."
     ),
     "CALLBACK_CAPTURE": "Collect a callback date and time, then call schedule_callback.",
     "ESCALATION": "Create the required escalation and do not continue selling.",
@@ -728,25 +730,9 @@ def validate_pin_code(call_id: str, customer_id: str, pin_code: str) -> dict[str
             "SELECT city, state, serviceable FROM serviceable_pin_codes WHERE pin_code = ?",
             (normalized,),
         ).fetchone()
-        if pin is None:
-            db.execute(
-                "UPDATE savings_call_sessions SET pin_validation_status = 'UNKNOWN', "
-                "updated_at = ? WHERE call_id = ?",
-                (_now_ist(), call_id),
-            )
-            _record_event(db, call_id, "PIN_CONFIRMATION", "PIN_UNKNOWN", normalized, "PIN_CONFIRMATION", "ACCEPTED")
-            db.commit()
-            return {
-                "status": "UNKNOWN",
-                "next_state": "PIN_CONFIRMATION",
-                "next_action": (
-                    "Do not claim the PIN is unserviceable. Warmly tell the customer you could not "
-                    "instantly confirm whether digital opening is available at that PIN, so you are "
-                    "passing it to the team to verify and they will follow up shortly. Create a "
-                    "PRODUCT_INFORMATION escalation, then finalize ESCALATED."
-                ),
-            }
-        if not pin["serviceable"]:
+        # Demo: any well-formed PIN is serviceable unless it is an explicit deny-list
+        # entry (serviceable = 0), so a tester can use any realistic PIN and continue.
+        if pin is not None and not pin["serviceable"]:
             db.execute(
                 "UPDATE savings_call_sessions SET pin_validation_status = 'NOT_SERVICEABLE', "
                 "updated_at = ? WHERE call_id = ?",
@@ -769,8 +755,8 @@ def validate_pin_code(call_id: str, customer_id: str, pin_code: str) -> dict[str
         db.commit()
         return {
             "status": "SERVICEABLE",
-            "city": pin["city"],
-            "state": pin["state"],
+            "city": pin["city"] if pin else None,
+            "state": pin["state"] if pin else None,
             "next_state": "AGE_CHECK",
             "next_action": _NEXT_ACTION["AGE_CHECK"],
         }
