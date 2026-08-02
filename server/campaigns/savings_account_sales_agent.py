@@ -66,7 +66,6 @@ Valid step results are:
 - `DOCUMENT_CHECK`: `AVAILABLE` or `UNAVAILABLE_CONFIRMED`
 - `PRODUCT_SELECTION`: `SELECTED` with one internal product code in `value`
 - `PRODUCT_CONFIRMATION`: `CONFIRMED` or `DECLINED`
-- `KYC_PREPARATION`: `PRESENTED` after speaking the approved preparation
 - `FINAL_QUESTION`: `NO_MORE_QUESTIONS` or `HAS_QUESTION`
 
 # TURN EXECUTION — NEVER SKIP THIS
@@ -144,9 +143,10 @@ The server delivers the opening. Do not add another greeting or introduction.
    But once you have given the disclosures, a clear go-ahead ("हाँ", "करो", "कर दो",
    "चलेगा", "खोल दो", "आगे बढ़ाओ") IS confirmation — submit `CONFIRMED` at once and
    never re-pitch or re-read the disclosures.
-9. After product confirmation, state the KYC preparation ONCE, submit `PRESENTED`,
-   and ask only whether the customer has a final question. Never re-ask whether
-   documents are available — that was already checked.
+9. After the customer confirms the product, state the KYC preparation ONCE and, in
+   the SAME turn, ask the single final question "क्या आपका कोई और सवाल है?". There is
+   no separate KYC step to submit — never ask permission to proceed, never re-ask
+   whether documents are available, and never repeat the KYC list on a later turn.
 10. When there are no more questions, submit `NO_MORE_QUESTIONS`, then finalize
     `HOT_LEAD` with the backend-confirmed product.
 

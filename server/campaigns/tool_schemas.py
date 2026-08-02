@@ -423,7 +423,7 @@ SUBMIT_STEP_RESULT = {
                     "ALREADY_COMPLETED", "NOT_INTERESTED", "CAPTURED", "CORRECTED",
                     "ELIGIBLE", "UNDERAGE_CONFIRMED", "RESIDENT",
                     "NON_RESIDENT_CONFIRMED", "UNAVAILABLE_CONFIRMED", "SELECTED",
-                    "DECLINED", "PRESENTED", "NO_MORE_QUESTIONS", "HAS_QUESTION",
+                    "DECLINED", "NO_MORE_QUESTIONS", "HAS_QUESTION",
                 ],
             },
             "value": {"type": "string", "description": "Only the value required by this step, such as six PIN digits or the selected internal product code."},

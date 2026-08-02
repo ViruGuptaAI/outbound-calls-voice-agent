@@ -163,7 +163,6 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.submit(call_id, "DOCUMENT_CHECK", "AVAILABLE")
         self.submit(call_id, "PRODUCT_SELECTION", "SELECTED", "INSTANT_SUPER")
         self.submit(call_id, "PRODUCT_CONFIRMATION", "CONFIRMED")
-        self.submit(call_id, "KYC_PREPARATION", "PRESENTED")
         self.submit(call_id, "FINAL_QUESTION", "NO_MORE_QUESTIONS")
 
         context = get_savings_runtime_context(call_id, self.customer_id)

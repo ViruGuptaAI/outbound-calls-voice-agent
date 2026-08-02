@@ -125,11 +125,6 @@ _NEXT_ACTION = {
         "Only a clear 'नहीं' or a switch to the other product is DECLINED. If the customer sounds impatient, "
         "take it as CONFIRMED and move on."
     ),
-    "KYC_PREPARATION": (
-        "State the approved KYC preparation once, briefly, then IMMEDIATELY submit PRESENTED — do not ask "
-        "permission to proceed and never say 'क्या मैं आगे बढ़ाउँ?'. Do not ask again whether documents are "
-        "available, and do not repeat the list."
-    ),
     "FINAL_QUESTION": (
         "Ask the one concrete question 'क्या आपका कोई और सवाल है?' (do you have any other question?) — "
         "never a vague 'क्या मैं आगे बढ़ाउँ?' or 'shall I proceed?'. If they ask what happens next or who "
@@ -144,6 +139,19 @@ _NEXT_ACTION = {
     "TERMINAL": "Do not ask questions or perform another journey action.",
 }
 
+# Product confirmation lands directly on FINAL_QUESTION: the KYC preparation is presentation-only
+# (no customer decision), so it is delivered once here as the entry action rather than living in a
+# self-advancing state the model must submit PRESENTED to leave (which it kept forgetting, causing
+# the disclosure to repeat every turn).
+_AFTER_CONFIRM_ACTION = (
+    "First, briefly deliver the approved KYC preparation ONCE: keep the original PAN and Aadhaar "
+    "(with the Aadhaar-linked mobile) ready, and never share an OTP, PIN, password, CVV, full PAN "
+    "or full Aadhaar on this call. Then, in the SAME turn, ask the single final question "
+    "'क्या आपका कोई और सवाल है?' (do you have any other question?). Do not ask permission to proceed, "
+    "never say 'क्या मैं आगे बढ़ाउँ?', do not ask again whether documents are available, and never "
+    "repeat the KYC list on a later turn."
+)
+
 _ALLOWED_STEP_RESULTS = {
     "RECIPIENT_CONFIRMATION": ["CONFIRMED", "WRONG_NUMBER", "THIRD_PARTY"],
     "AVAILABILITY": ["AVAILABLE", "BUSY", "ALREADY_COMPLETED", "NOT_INTERESTED"],
@@ -154,7 +162,6 @@ _ALLOWED_STEP_RESULTS = {
     "DOCUMENT_CHECK": ["AVAILABLE", "UNAVAILABLE_CONFIRMED"],
     "PRODUCT_SELECTION": ["SELECTED"],
     "PRODUCT_CONFIRMATION": ["CONFIRMED", "DECLINED"],
-    "KYC_PREPARATION": ["PRESENTED"],
     "FINAL_QUESTION": ["NO_MORE_QUESTIONS", "HAS_QUESTION"],
 }
 
@@ -566,11 +573,8 @@ def _transition_for(state: str, result: str) -> tuple[str, str] | None:
             "SELECTED": ("PRODUCT_CONFIRMATION", _NEXT_ACTION["PRODUCT_CONFIRMATION"]),
         },
         "PRODUCT_CONFIRMATION": {
-            "CONFIRMED": ("KYC_PREPARATION", _NEXT_ACTION["KYC_PREPARATION"]),
+            "CONFIRMED": ("FINAL_QUESTION", _AFTER_CONFIRM_ACTION),
             "DECLINED": ("PRODUCT_SELECTION", _NEXT_ACTION["PRODUCT_SELECTION"]),
-        },
-        "KYC_PREPARATION": {
-            "PRESENTED": ("FINAL_QUESTION", _NEXT_ACTION["FINAL_QUESTION"]),
         },
         "FINAL_QUESTION": {
             "NO_MORE_QUESTIONS": ("FINAL_QUESTION", "Call finalize_call with outcome HOT_LEAD and the confirmed product."),
