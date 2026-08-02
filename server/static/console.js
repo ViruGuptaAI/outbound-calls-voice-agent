@@ -122,8 +122,7 @@ async function loadCustomers() {
 }
 
 // Populate the dropdown, filtered to the selected campaign's audience.
-// Collections campaigns declare audience 'card_overdue' or 'loan_overdue' so
-// customers with no dues for that product are hidden entirely.
+// Campaigns can declare an audience flag so only eligible customers are shown.
 function renderCustomers() {
     const camp = selectedCampaign ? campaignsById[selectedCampaign] : null;
     const audience = camp ? camp.audience : null;
@@ -132,11 +131,11 @@ function renderCustomers() {
     const prev = selectEl.value;
     selectEl.innerHTML = list.length
         ? '<option value="">— Select a customer —</option>'
-        : '<option value="">— No customers with dues for this campaign —</option>';
+        : '<option value="">— No eligible customers for this campaign —</option>';
     list.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
-        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}`;
+        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}${c.incomplete_savings_application ? ' · Application incomplete' : ''}`;
         selectEl.appendChild(opt);
     });
     if (prev && list.some(c => c.id === prev)) {
@@ -154,6 +153,7 @@ selectEl.addEventListener('change', () => {
             <div class="cust-row"><span>City</span><b>${c.city || '—'}</b></div>
             <div class="cust-row"><span>Phone</span><b>${c.phone || '—'}</b></div>
             ${c.overdue ? `<div class="cust-flag">⚠ ${c.card_overdue && c.loan_overdue ? 'Has overdue credit-card and vehicle-loan dues' : c.card_overdue ? 'Has an overdue credit-card balance' : c.loan_overdue ? 'Has an overdue vehicle-loan EMI' : 'Has an overdue life insurance premium'}</div>` : ''}
+            ${c.incomplete_savings_application ? '<div class="cust-flag">FinServe Instant application is incomplete</div>' : ''}
         `;
     } else {
         detailEl.innerHTML = '';

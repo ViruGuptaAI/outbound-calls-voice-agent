@@ -400,3 +400,148 @@ GET_REVIVAL_OPTIONS = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+# ── Managed savings-account completion tools ────────────────────────────────
+SUBMIT_STEP_RESULT = {
+    "type": "function",
+    "name": "submit_step_result",
+    "description": (
+        "Submit one answer for the backend's current savings-application state. Use ONLY a result listed "
+        "in the latest runtime allowed_step_results. A customer question or objection is not a result; "
+        "answer it without this tool. Never ask the next journey question before ACCEPTED."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "result": {
+                "type": "string",
+                "description": (
+                    "Must be listed in runtime allowed_step_results. HAS_QUESTION is valid only when "
+                    "call_state is FINAL_QUESTION, never for an earlier customer question."
+                ),
+                "enum": [
+                    "CONFIRMED", "WRONG_NUMBER", "THIRD_PARTY", "AVAILABLE", "BUSY",
+                    "ALREADY_COMPLETED", "NOT_INTERESTED", "CAPTURED", "CORRECTED",
+                    "ELIGIBLE", "UNDERAGE_CONFIRMED", "RESIDENT",
+                    "NON_RESIDENT_CONFIRMED", "UNAVAILABLE_CONFIRMED", "SELECTED",
+                    "DECLINED", "PRESENTED", "NO_MORE_QUESTIONS", "HAS_QUESTION",
+                ],
+            },
+            "value": {"type": "string", "description": "Only the value required by this step, such as six PIN digits or the selected internal product code."},
+        },
+        "required": ["result"],
+        "additionalProperties": False,
+    },
+}
+
+VALIDATE_PIN_CODE = {
+    "type": "function",
+    "name": "validate_pin_code",
+    "description": "Validate the six-digit postal PIN only after the customer confirms the read-back. The backend checks format, captured-value consistency, serviceability, and advances state.",
+    "parameters": {
+        "type": "object",
+        "properties": {"pin_code": {"type": "string", "pattern": "^[0-9]{6}$"}},
+        "required": ["pin_code"],
+        "additionalProperties": False,
+    },
+}
+
+GET_PRODUCT_INFORMATION = {
+    "type": "function",
+    "name": "get_product_information",
+    "description": "Refresh approved facts for exactly one FinServe Instant product. Use only if the supplied snapshot is missing or stale for the requested topic.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "product": {"type": "string", "enum": ["INSTANT_CLASSIC", "INSTANT_SUPER"]},
+            "topics": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["display_name", "comparison", "confirmation_pitch", "mandatory_disclosures", "kyc_preparation"]},
+            },
+        },
+        "required": ["product"],
+        "additionalProperties": False,
+    },
+}
+
+CHECK_APPLICATION_STATUS = {
+    "type": "function",
+    "name": "check_application_status",
+    "description": "Re-read the server-bound savings application when the customer says it is already complete. Never request credentials or full identity numbers.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": False,
+    },
+}
+
+SCHEDULE_CALLBACK = {
+    "type": "function",
+    "name": "schedule_callback",
+    "description": "Pass the customer's callback date and time wording unchanged. The backend resolves IST, validates future time and the 9 AM–6 PM window, and distinguishes a booking from a recorded preference.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "date_expression": {"type": "string"},
+            "time_expression": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        "required": ["date_expression", "time_expression", "reason"],
+        "additionalProperties": False,
+    },
+}
+
+REGISTER_DO_NOT_CALL = {
+    "type": "function",
+    "name": "register_do_not_call",
+    "description": "Durably suppress this customer immediately after an explicit do-not-call request. Never resume selling after calling it.",
+    "parameters": {
+        "type": "object",
+        "properties": {"reason": {"type": "string"}},
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+}
+
+CREATE_SAVINGS_ESCALATION = {
+    "type": "function",
+    "name": "create_escalation",
+    "description": "Create a human follow-up for a savings-application issue. Do not claim success or a response time until CREATED or QUEUED is returned.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": ["FRAUD", "GRIEVANCE", "TECHNICAL_KYC", "CALLBACK_TECHNICAL", "PRODUCT_INFORMATION", "FUNDED_KYC_INCOMPLETE", "APPLICATION_STATUS", "PRIOR_PROMISE", "LEGAL_THREAT", "LANGUAGE_SUPPORT", "VULNERABILITY", "DOMESTIC_ABUSE", "DNC_COMPLIANCE"],
+            },
+            "summary": {"type": "string"},
+            "urgency": {"type": "string", "enum": ["low", "medium", "high"]},
+            "contact_preference": {"type": "string"},
+        },
+        "required": ["category", "summary", "urgency", "contact_preference"],
+        "additionalProperties": False,
+    },
+}
+
+FINALIZE_SAVINGS_CALL = {
+    "type": "function",
+    "name": "finalize_call",
+    "description": "Write the single terminal CRM disposition. The backend validates all prerequisites and returns the exact customer_close. Call it once and speak that close exactly.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "outcome": {
+                "type": "string",
+                "enum": ["HOT_LEAD", "CALLBACK_SCHEDULED", "CALLBACK_PREFERENCE_RECORDED", "NOT_INTERESTED", "NOT_ELIGIBLE_PIN", "NOT_ELIGIBLE_MINOR", "NOT_ELIGIBLE_NON_RESIDENT", "NOT_ELIGIBLE_DOCUMENTS", "ALREADY_COMPLETED", "APPLICATION_STATUS_UNCONFIRMED", "DNC_REQUESTED", "WRONG_NUMBER", "THIRD_PARTY", "WRONG_INTENT", "ESCALATED", "SAFETY_EXIT", "SYSTEM_ERROR", "NO_RESPONSE", "IRATE_CUSTOMER"],
+            },
+            "reason": {"type": "string"},
+            "product": {"type": "string", "enum": ["INSTANT_CLASSIC", "INSTANT_SUPER"]},
+            "callback_id": {"type": "string"},
+            "escalation_id": {"type": "string"},
+            "response_style": {"type": "string", "enum": ["HINDI", "HINGLISH"]},
+        },
+        "required": ["outcome", "reason", "response_style"],
+        "additionalProperties": False,
+    },
+}
+

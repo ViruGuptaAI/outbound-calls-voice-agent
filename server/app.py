@@ -28,6 +28,18 @@ from campaigns import CAMPAIGN_REGISTRY, get_campaign, DEFAULT_CAMPAIGN  # noqa:
 from campaigns.tool_schemas import END_CALL, ESCALATE_TO_HUMAN  # noqa: E402
 from crm_tools import TOOL_FUNCTIONS  # noqa: E402
 from playbooks import get_playbook  # noqa: E402
+from savings_account_tools import (  # noqa: E402
+    SAVINGS_CALL_HEARTBEAT_SECONDS,
+    SAVINGS_TOOL_FUNCTIONS,
+    finalize_call as finalize_savings_call,
+    get_savings_runtime_context,
+    mark_savings_opening_delivered,
+    start_savings_call,
+    submit_step_result as submit_savings_step_result,
+    touch_savings_call,
+)
+
+ALL_TOOL_FUNCTIONS = {**TOOL_FUNCTIONS, **SAVINGS_TOOL_FUNCTIONS}
 
 load_dotenv(override=True)
 
@@ -230,7 +242,9 @@ _TOOL_NAMES_FOR_REDACTION = [
     "get_investments", "get_all_transactions", "play_hold_music",
     "get_card_dues", "get_payment_history", "get_settlement_options",
     "record_payment_commitment", "send_payment_link", "end_call",
-    "escalate_to_human",
+    "escalate_to_human", "submit_step_result", "validate_pin_code",
+    "get_product_information", "check_application_status", "schedule_callback",
+    "register_do_not_call", "create_escalation", "finalize_call",
 ]
 _TOOL_NAME_PATTERN = _re.compile(
     r"\b(?:" + "|".join(_re.escape(n) for n in _TOOL_NAMES_FOR_REDACTION) + r")\b",
@@ -276,6 +290,14 @@ TOOL_DISPLAY_LABELS = {
     "get_settlement_options": "Checking authorised options",
     "record_payment_commitment": "Recording promise-to-pay",
     "send_payment_link": "Sending secure payment link",
+    "submit_step_result": "Saving journey progress",
+    "validate_pin_code": "Checking service availability",
+    "get_product_information": "Refreshing approved product details",
+    "check_application_status": "Checking application status",
+    "schedule_callback": "Checking callback availability",
+    "register_do_not_call": "Applying contact preference",
+    "create_escalation": "Creating human follow-up",
+    "finalize_call": "Saving final outcome",
 }
 
 # ── Cached credential (avoids spawning az.cmd on every connection) ────────────
@@ -287,11 +309,135 @@ _token_expiry = 0  # epoch seconds
 # ──────────────────────────────────────────────────────────────────────────────
 # Voice Live session configuration builder
 # ──────────────────────────────────────────────────────────────────────────────
+_MANAGED_TURN_GUARD = """
+MANDATORY TURN PROCEDURE:
+1. Read the latest customer utterance plus the authoritative call_state before
+    speaking. That utterance may answer only state_when_latest_customer_utterance_arrived.
+    If current_state_was_entered_after_latest_utterance is true, do not submit a
+    result; explain or ask the new state's next_action and wait for a new reply.
+2. In AVAILABILITY, phrases such as "convenient hai", "abhi karte hain",
+    "chalo complete kar lete hain", "help karo", or "karo" mean AVAILABLE.
+    This applies only when the customer says them after the availability question.
+    A recipient-confirmation "haan" or "boliye" can never also mean AVAILABLE.
+3. Never submit an answer for a future state and never speak a future-state
+    question before the current transition returns ACCEPTED. If the customer
+    volunteers a later fact, do not submit it. Ask the relevant single question
+    when that state becomes current and wait for a fresh answer.
+    At most ONE state transition may be accepted per CUSTOMER UTTERANCE, including
+    across chained responses. After one is accepted, explain or ask the new state's
+    next_action and WAIT for the customer to speak again. Never reuse the same
+    "yes", "haan", "boliye", or acknowledgement to satisfy a second state.
+4. Never mention a backend, system, tool, result, state, stage, rejection,
+    alignment, or internal workflow. Recover silently in natural customer language.
+5. Ask exactly one question per turn, never a list. Use feminine Hindi forms such
+    as "समझ गई" and "बताती हूँ", never masculine forms such as "समझ गया".
+6. last_completed_step_spoken names a step that is ALREADY COMPLETE. Never tell
+    the customer to repeat it or invent its mechanics.
+7. When next_action directs a tool call or finalization, perform it before any
+    customer-facing speech.
+8. For a postal PIN readback, speak captured_pin_readback exactly. Never print a
+    six-digit sequence, interpret it as a whole number, use markdown, or use bullets.
+9. A customer question or trust objection is NOT a step result. If the customer
+    asks why, what, how, or whether information is necessary without providing the
+    current state's required answer, call NO tool. Answer the question directly.
+    During PIN_CAPTURE, if the customer asks why or whether it is safe, explain that
+    this is a postal PIN, used only to check whether digital savings-account opening
+    is available in their area, it cannot access their account or transactions, and
+    sharing it on this call is optional. Then ask once, warmly, for the area PIN code;
+    do not badger or repeat the request in the same response.
+10. SCRIPT: Write every Hindi word in Devanagari (देवनागरी). Never romanize Hindi in
+    Latin letters — say "आपका", "क्या", "है", "बताइए", never "aapka", "kya", "hai",
+    "bataiye". Keep everyday English banking words in Latin rather than translating
+    them into stilted Hindi: PIN code, KYC, PAN, Aadhaar, savings account,
+    application, steps, process, form, account, Instant Classic, Instant Super — for
+    example say "कुछ बाकी steps", never "कुछ बाकी कदम".
+11. NEVER repeat a question the customer already answered, and never restate a
+    disclosure, product comparison, or list you have already given this call. Say
+    each explanation at most once. If the customer confirms, tells you to proceed,
+    or shows impatience ("कर दो", "करो", "बता दिया", "कितनी बार बोलूँ", "चलेगा",
+    "खोल दो"), treat it as agreement: submit the current state's result and advance —
+    do NOT restate anything or offer to explain again.
+""".strip()
+
+
+def _build_managed_savings_config(
+    campaign: dict,
+    playbook_text: str,
+    playbook_tool_names: frozenset[str] | None,
+    runtime_context: dict | None,
+) -> dict:
+    """Build the isolated Voice Live configuration for the managed savings flow."""
+    instructions = campaign["prompt"]
+    if playbook_text:
+        instructions += "\n" + playbook_text
+    if runtime_context:
+        instructions += (
+            "\n\n# AUTHORITATIVE RUNTIME CONTEXT\n"
+            "This JSON is backend-owned. Never read it aloud or expose its field names.\n"
+            + json.dumps(runtime_context, ensure_ascii=False)
+        )
+
+    tools = [
+        tool for tool in campaign["tools"]
+        if playbook_tool_names is None or tool["name"] in playbook_tool_names
+    ]
+    voice = TONE_VOICE["cordial"]
+    return {
+        "type": "session.update",
+        "session": {
+            "instructions": instructions,
+            "modalities": ["text", "audio"],
+            "turn_detection": {
+                "type": "azure_semantic_vad_multilingual",
+                "threshold": 0.6,
+                "prefix_padding_ms": 700,
+                "silence_duration_ms": 400,
+                "create_response": False,
+                "interrupt_response": True,
+                "speech_duration_ms": 200,
+                "remove_filler_words": False,
+                "auto_truncate": True,
+                "appended_text_after_truncation": " -- [user interrupted | response incomplete]",
+            },
+            "input_audio_transcription": {
+                "model": "azure-speech",
+                "language": "hi-IN,en-IN",
+                "phrase_list": [
+                    "Asha", "आशा", "Contoso Bank", "FinServe Instant",
+                    "Instant Classic", "Instant Super", "PAN", "Aadhaar",
+                    "KYC", "PIN code", "callback", "do not call",
+                ],
+            },
+            "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
+            "input_audio_echo_cancellation": {
+                "type": "server_echo_cancellation",
+                "reference_source": "server",
+                "channels": 1,
+            },
+            "voice": {
+                "name": voice["name"],
+                "type": "azure-standard",
+                "temperature": 0.6,
+                "style": voice["style"],
+                "pitch": voice["pitch"],
+                "rate": voice["rate"],
+                "volume": voice["volume"],
+            },
+            "input_audio_sampling_rate": 24000,
+            "reasoning_effort": "none",
+            "max_response_output_tokens": "320",
+            "tools": tools,
+            "tool_choice": "auto",
+        },
+    }
+
+
 def build_session_config(
     campaign_key: str,
     customer_name: str = "",
     tone: str = DEFAULT_TONE,
     languages: list[str] | None = None,
+    runtime_context: dict | None = None,
 ) -> dict:
     """
     Build the session.update payload for an outbound campaign agent.
@@ -309,6 +455,14 @@ def build_session_config(
 
     # Look up the campaign's playbook + its required tool names
     playbook_text, playbook_tool_names = get_playbook(campaign_key)
+
+    if campaign.get("managed_flow") == "savings_account":
+        return _build_managed_savings_config(
+            campaign,
+            playbook_text,
+            playbook_tool_names,
+            runtime_context,
+        )
 
     # Assemble instructions: base prompt + playbook
     instructions = base_prompt
@@ -663,8 +817,11 @@ class VoiceLiveSession:
         self._user_speech_end_ts = None
         self._first_audio_latency_logged = False
         self._campaign_key = campaign_key if campaign_key in CAMPAIGN_REGISTRY else DEFAULT_CAMPAIGN
-        self._tone = tone if tone in TONE_INSTRUCTIONS else DEFAULT_TONE
-        self._languages = normalize_languages(languages)
+        self._managed_flow = CAMPAIGN_REGISTRY[self._campaign_key].get("managed_flow")
+        self._tone = DEFAULT_TONE if self._managed_flow else (
+            tone if tone in TONE_INSTRUCTIONS else DEFAULT_TONE
+        )
+        self._languages = ["hindi", "english"] if self._managed_flow else normalize_languages(languages)
         self._agent_name = CAMPAIGN_REGISTRY[self._campaign_key]["name"]
         self._call_id = str(uuid.uuid4())[:8]
         self._customer_id = customer_id
@@ -703,6 +860,18 @@ class VoiceLiveSession:
         # to end), whereas an idle goodbye IS cancellable (the customer came back).
         self._end_call_explicit: bool = False
         self._end_call_reason: str = ""  # reason string for the hang-up
+        self._managed_opening_pending: bool = False
+        self._managed_close_waiting: bool = False
+        self._managed_close_armed: bool = False
+        self._managed_terminal: bool = False
+        self._managed_session_started: bool = False
+        self._managed_lease_heartbeat: asyncio.Task | None = None
+        self._managed_customer_close: str = ""
+        self._managed_last_transition_user_turn: int | None = None
+        self._managed_expected_state: str | None = None
+        self._managed_allowed_step_results: frozenset[str] = frozenset()
+        self._managed_state_user_turn: int | None = None
+        self._managed_state_at_user_turn: str | None = None
         self._user_speaking: bool = False  # True between speech_started and speech_stopped
         self._last_user_activity_ts: float = time.monotonic()  # last customer speech/turn
         self._idle_monitor: asyncio.Task | None = None  # silence-timeout watchdog
@@ -755,6 +924,26 @@ class VoiceLiveSession:
             self._customer_name or self._customer_id,
         )
 
+        runtime_context = None
+        if self._managed_flow == "savings_account":
+            runtime_context = await asyncio.to_thread(
+                start_savings_call,
+                self._call_id,
+                self._customer_id,
+            )
+            if runtime_context.get("error"):
+                message = runtime_context.get("message", "This customer is not eligible for this campaign.")
+                logger.warning("[%s] Managed savings call rejected: %s", self._call_id, message)
+                await self._send_to_browser(
+                    json.dumps({"Kind": "AgentTranscription", "Text": message, "Agent": "System"})
+                )
+                await self._terminate_call(message)
+                return
+            self._managed_session_started = True
+            self._managed_lease_heartbeat = asyncio.create_task(
+                self._managed_lease_heartbeat_loop()
+            )
+
         # Configure the session with the selected campaign agent + playbook
         await self._send_json(
             build_session_config(
@@ -762,6 +951,7 @@ class VoiceLiveSession:
                 customer_name=self._customer_name,
                 tone=self._tone,
                 languages=self._languages,
+                runtime_context=runtime_context,
             )
         )
 
@@ -769,36 +959,54 @@ class VoiceLiveSession:
         # the purpose of the call, then asks permission to proceed.
         campaign = CAMPAIGN_REGISTRY[self._campaign_key]
         first_name = self._customer_name.split()[0] if self._customer_name else "there"
-        company = campaign.get("company", "Contoso Bank")
-        primary_label = LANGUAGE_REGISTRY[self._languages[0]]["label"]
-        is_english = self._languages[0] == "english"
-        # Front-load a hard language mandate so the greeting is deterministic, not probabilistic.
-        lang_mandate = (
-            f"LANGUAGE — MANDATORY: Speak your ENTIRE opening (greeting AND question) in {primary_label}. "
-            + ("" if is_english else f"Every word must be in {primary_label}; do NOT use English at all. ")
-        )
-        greet_line = (
-            f"Introduce yourself first: warmly greet {first_name} and say you are "
-            f"{campaign['agent_name']} from {company} — phrased naturally in {primary_label}, "
-            f"not translated word-for-word. Do not skip your name or the company. "
-        )
-        opening_instructions = (
-            lang_mandate
-            + f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
-            + greet_line
-            + f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
-            + f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
-            + f"The example wording above is illustrative — say it in {primary_label}. "
-            + f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
-            + f"numbers or account details yet. Remember: the whole opening must be in {primary_label}."
-        )
-        await self._send_json({
-            "type": "response.create",
-            "response": {
-                "modalities": ["audio", "text"],
-                "instructions": opening_instructions,
-            },
-        })
+        if self._managed_flow == "savings_account":
+            opening = (
+                f"नमस्कार {first_name} जी! मैं Asha बोल रही हूँ, Contoso Bank से। "
+                f"क्या मेरी बात {first_name} जी से हो रही है?"
+            )
+            self._managed_opening_pending = True
+            await self._send_json({
+                "type": "response.create",
+                "response": {
+                    "modalities": ["audio", "text"],
+                    "tool_choice": "none",
+                    "instructions": (
+                        "Speak exactly the following Hindi opening with no preface, addition, "
+                        f"translation, or tool call:\n{opening}"
+                    ),
+                },
+            })
+        else:
+            company = campaign.get("company", "Contoso Bank")
+            primary_label = LANGUAGE_REGISTRY[self._languages[0]]["label"]
+            is_english = self._languages[0] == "english"
+            # Front-load a hard language mandate so the greeting is deterministic, not probabilistic.
+            lang_mandate = (
+                f"LANGUAGE — MANDATORY: Speak your ENTIRE opening (greeting AND question) in {primary_label}. "
+                + ("" if is_english else f"Every word must be in {primary_label}; do NOT use English at all. ")
+            )
+            greet_line = (
+                f"Introduce yourself first: warmly greet {first_name} and say you are "
+                f"{campaign['agent_name']} from {company} — phrased naturally in {primary_label}, "
+                f"not translated word-for-word. Do not skip your name or the company. "
+            )
+            opening_instructions = (
+                lang_mandate
+                + f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
+                + greet_line
+                + f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
+                + f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
+                + f"The example wording above is illustrative — say it in {primary_label}. "
+                + f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
+                + f"numbers or account details yet. Remember: the whole opening must be in {primary_label}."
+            )
+            await self._send_json({
+                "type": "response.create",
+                "response": {
+                    "modalities": ["audio", "text"],
+                    "instructions": opening_instructions,
+                },
+            })
 
         # Notify browser which campaign agent is on the call
         await self._send_agent_info(self._campaign_key)
@@ -815,7 +1023,7 @@ class VoiceLiveSession:
 
     async def handle_browser_audio(self, raw_pcm: bytes):
         """Queue raw PCM16 audio from the browser for Voice Live."""
-        if self._call_ended:
+        if self._call_ended or self._managed_terminal:
             return
         audio_b64 = base64.b64encode(raw_pcm).decode("ascii")
         await self._send_queue.put(
@@ -824,6 +1032,22 @@ class VoiceLiveSession:
                 "audio": audio_b64,
             })
         )
+
+    async def _managed_lease_heartbeat_loop(self):
+        """Keep this session's application lease alive until the call is finalized."""
+        try:
+            while not self._call_ended and not self._managed_terminal:
+                await asyncio.sleep(SAVINGS_CALL_HEARTBEAT_SECONDS)
+                refreshed = await asyncio.to_thread(
+                    touch_savings_call,
+                    self._call_id,
+                    self._customer_id,
+                )
+                if not refreshed:
+                    logger.warning("[%s] Managed call lease is no longer active", self._call_id)
+                    return
+        except asyncio.CancelledError:
+            pass
 
     async def _sender_loop(self):
         """Drain queue and forward to Voice Live WebSocket."""
@@ -947,6 +1171,8 @@ class VoiceLiveSession:
                                 "Language": stt_lang,
                             })
                         )
+                        if transcript.strip() and self._managed_flow == "savings_account":
+                            await self._safe_response_create()
 
                     case "conversation.item.input_audio_transcription.failed":
                         logger.error(
@@ -1050,6 +1276,9 @@ class VoiceLiveSession:
                             self._response_audio_bytes = 0
                             self._response_truncated = False
                             self._truncation_audio_end_ms = 0
+                            if self._managed_close_waiting:
+                                self._managed_close_waiting = False
+                                self._managed_close_armed = True
                             # Cancel watchdog — response started normally
                             if self._response_watchdog and not self._response_watchdog.done():
                                 self._response_watchdog.cancel()
@@ -1060,6 +1289,20 @@ class VoiceLiveSession:
                         self._response_active = False
                         resp = event.get("response", {})
                         status = resp.get("status")
+                        if self._managed_opening_pending and status == "completed":
+                            self._managed_opening_pending = False
+                            await asyncio.to_thread(
+                                mark_savings_opening_delivered,
+                                self._call_id,
+                                self._customer_id,
+                            )
+                        if self._managed_close_armed:
+                            self._managed_close_armed = False
+                            logger.info("[%s] Managed close delivered — terminating call", self._call_id)
+                            asyncio.create_task(
+                                self._terminate_call(self._end_call_reason or "Managed workflow finalized.")
+                            )
+                            continue
                         # Reset the idle clock — the agent just finished, so start
                         # counting the customer's silence from now.
                         self._last_user_activity_ts = time.monotonic()
@@ -1100,7 +1343,8 @@ class VoiceLiveSession:
                                 logger.info("[%s] Clearing pending hold music (response was cancelled)", self._call_id)
                                 self._pending_hold_music = None
                                 self._hold_announced = False
-                            self._pending_response_create = False
+                            if self._managed_flow != "savings_account":
+                                self._pending_response_create = False
                         elif status != "completed":
                             logger.error(
                                 "[%s] Response error: %s",
@@ -1169,7 +1413,7 @@ class VoiceLiveSession:
                         elif self._pending_response_create:
                             self._pending_response_create = False
                             logger.info("[%s] Firing deferred response.create", self._call_id)
-                            await self._send_json({"type": "response.create"})
+                            await self._send_response_create()
 
                         # ── Trigger background summarization (non-blocking) ──
                         if (
@@ -1218,6 +1462,13 @@ class VoiceLiveSession:
         except (ConnectionClosed, ConnectionResetError, OSError) as e:
             # Expected when the call ends and the Voice Live socket is torn down.
             logger.info("[%s] Voice Live connection closed: %s", self._call_id, e)
+            if self._managed_session_started and not self._managed_terminal and not self._call_ended:
+                await self._finalize_managed_call(
+                    "SYSTEM_ERROR",
+                    "Voice connection closed before workflow finalization.",
+                    speak_close=False,
+                )
+                await self._terminate_call("Voice connection closed before workflow finalization.")
         except Exception:
             logger.exception("[%s] Receiver loop error", self._call_id)
 
@@ -1231,6 +1482,89 @@ class VoiceLiveSession:
         call_id = event.get("call_id", "")
         fn_name = event.get("name", "")
         args_str = event.get("arguments", "{}")
+
+        if self._managed_flow == "savings_account" and fn_name not in SAVINGS_TOOL_FUNCTIONS:
+            logger.error("[%s] Blocked non-savings tool in managed flow: %s", self._call_id, fn_name)
+            await self._send_json({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps({
+                        "error": "This operation is not permitted in the managed savings workflow.",
+                    }),
+                },
+            })
+            await self._safe_response_create()
+            return
+
+        if self._managed_terminal:
+            await self._send_json({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps({"error": "Call already finalized. Speak no further content."}),
+                },
+            })
+            return
+
+        if self._managed_flow == "savings_account" and fn_name == "submit_step_result":
+            if self._managed_last_transition_user_turn == self._user_turn_count:
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps({
+                            "status": "WAIT_FOR_NEW_CUSTOMER_INPUT",
+                            "recovery_action": (
+                                "One transition was already accepted for the latest customer utterance. "
+                                "Do not call any tool now. Follow the current next_action in natural "
+                                "customer language, then wait for the customer to speak again."
+                            ),
+                        }),
+                    },
+                })
+                await self._safe_response_create()
+                return
+
+            try:
+                proposed_args = json.loads(args_str) if args_str.strip() else {}
+            except json.JSONDecodeError:
+                proposed_args = {}
+            proposed_result = str(proposed_args.get("result", "")).strip().upper()
+            if proposed_result not in self._managed_allowed_step_results:
+                if (
+                    self._managed_expected_state == "PIN_CAPTURE"
+                    and proposed_result == "HAS_QUESTION"
+                ):
+                    recovery_action = (
+                        "The customer asked a trust question, not a workflow question result. Call no tool. "
+                        "Explain that this is a postal PIN, not a banking PIN; it is used only to check "
+                        "whether digital savings-account opening is available in their area; it cannot "
+                        "access their account or transactions; and sharing it on this call is optional. "
+                        "Then ask once, warmly, for the area PIN code. Do not badger or repeat the request "
+                        "in this response."
+                    )
+                else:
+                    recovery_action = (
+                        "This is not a valid result for the current workflow step. Do not mention this "
+                        "internally. Follow the authoritative next_action and wait for a valid customer answer."
+                    )
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps({
+                            "status": "NO_STATE_CHANGE",
+                            "recovery_action": recovery_action,
+                        }),
+                    },
+                })
+                await self._safe_response_create()
+                return
 
         # ── Loop guard: cap repeated calls to the same tool ──────────
         MAX_TOOL_CALLS_PER_CYCLE = 3
@@ -1469,14 +1803,48 @@ class VoiceLiveSession:
                 # Let the model speak the escalation confirmation + permission-to-end ask.
                 await self._safe_response_create()
 
-        elif fn_name in TOOL_FUNCTIONS:
+        elif fn_name in ALL_TOOL_FUNCTIONS:
             # ── CRM data tool call ───────────────────────────────────────
             try:
                 args = json.loads(args_str) if args_str.strip() else {}
             except json.JSONDecodeError:
                 args = {}
 
-            tool_fn = TOOL_FUNCTIONS[fn_name]
+            if (
+                self._managed_flow == "savings_account"
+                and fn_name == "validate_pin_code"
+                and self._managed_expected_state == "PIN_CAPTURE"
+            ):
+                pin_code = "".join(char for char in str(args.get("pin_code", "")) if char.isdigit())
+                if len(pin_code) == 6:
+                    logger.warning(
+                        "[%s] Recovering premature PIN validation call as PIN capture",
+                        self._call_id,
+                    )
+                    result = submit_savings_step_result(
+                        self._call_id,
+                        self._customer_id,
+                        "PIN_CAPTURE",
+                        "CAPTURED",
+                        pin_code,
+                    )
+                    if result.get("status") == "ACCEPTED":
+                        self._managed_last_transition_user_turn = self._user_turn_count
+                    await self._send_json({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": json.dumps({
+                                **result,
+                                "recovered_action": "PIN captured only; it has not been validated.",
+                            }),
+                        },
+                    })
+                    await self._safe_response_create()
+                    return
+
+            tool_fn = ALL_TOOL_FUNCTIONS[fn_name]
 
             # Determine which params the function needs
             import inspect
@@ -1485,14 +1853,27 @@ class VoiceLiveSession:
             for param_name in sig.parameters:
                 if param_name == "customer_id":
                     call_kwargs["customer_id"] = self._customer_id
+                elif param_name == "call_id":
+                    call_kwargs["call_id"] = self._call_id
+                elif param_name == "transcript":
+                    call_kwargs["transcript"] = list(self._transcript_log)
                 elif param_name in args:
                     call_kwargs[param_name] = args[param_name]
+            if fn_name == "submit_step_result":
+                call_kwargs["current_state"] = self._managed_expected_state or ""
 
             try:
                 result = tool_fn(**call_kwargs)
             except Exception as exc:
                 logger.exception("[%s] CRM tool error: %s", self._call_id, fn_name)
                 result = {"error": str(exc)}
+
+            if (
+                self._managed_flow == "savings_account"
+                and fn_name == "submit_step_result"
+                and result.get("status") == "ACCEPTED"
+            ):
+                self._managed_last_transition_user_turn = self._user_turn_count
 
             # Capture a recorded promise-to-pay so the deterministic follow-up
             # email at call end can include the commitment details.
@@ -1507,6 +1888,21 @@ class VoiceLiveSession:
                     "method": result.get("method"),
                     "reference": result.get("reference"),
                 }
+            if (
+                self._managed_flow == "savings_account"
+                and fn_name == "create_escalation"
+                and result.get("status") in ("CREATED", "QUEUED")
+            ):
+                self._handoff_email_sent = True
+            if (
+                self._managed_flow == "savings_account"
+                and fn_name == "finalize_call"
+                and result.get("status") == "FINALIZED"
+            ):
+                self._managed_terminal = True
+                self._managed_close_waiting = True
+                self._managed_customer_close = result.get("customer_close", "")
+                self._end_call_reason = f"Savings workflow finalized: {result.get('outcome', 'completed')}"
 
             logger.info(
                 "[%s] Tool %s → %d chars",
@@ -1541,7 +1937,85 @@ class VoiceLiveSession:
             logger.info("[%s] Deferring response.create (response still active)", self._call_id)
             self._pending_response_create = True
         else:
+            await self._send_response_create()
+
+    async def _send_response_create(self):
+        """Create a response, injecting fresh authoritative context for managed calls."""
+        if self._managed_flow != "savings_account":
             await self._send_json({"type": "response.create"})
+            return
+        if self._managed_terminal and self._managed_customer_close:
+            await self._send_json({
+                "type": "response.create",
+                "response": {
+                    "modalities": ["audio", "text"],
+                    "tool_choice": "none",
+                    "instructions": (
+                        "Speak exactly the following closing text with no preface, addition, "
+                        "translation, question, or tool call:\n"
+                        + self._managed_customer_close
+                    ),
+                },
+            })
+            return
+        context = await asyncio.to_thread(
+            get_savings_runtime_context,
+            self._call_id,
+            self._customer_id,
+        )
+        self._managed_expected_state = context.get("call_state")
+        self._managed_allowed_step_results = frozenset(context.get("allowed_step_results", []))
+        if self._managed_state_user_turn != self._user_turn_count:
+            self._managed_state_user_turn = self._user_turn_count
+            self._managed_state_at_user_turn = self._managed_expected_state
+        context["state_when_latest_customer_utterance_arrived"] = self._managed_state_at_user_turn
+        context["current_state_was_entered_after_latest_utterance"] = (
+            self._managed_state_at_user_turn != self._managed_expected_state
+        )
+        context["transition_already_accepted_for_latest_customer_utterance"] = (
+            self._managed_last_transition_user_turn == self._user_turn_count
+        )
+        await self._send_json({
+            "type": "response.create",
+            "response": {
+                "modalities": ["audio", "text"],
+                "instructions": (
+                    _MANAGED_TURN_GUARD
+                    + "\n\nAUTHORITATIVE RUNTIME CONTEXT FOR THIS TURN. "
+                    "Never read this JSON aloud. Handle only call_state and follow next_action.\n"
+                    + json.dumps(context, ensure_ascii=False)
+                ),
+            },
+        })
+
+    async def _finalize_managed_call(
+        self,
+        outcome: str,
+        reason: str,
+        *,
+        speak_close: bool,
+    ) -> dict:
+        """Finalize an infrastructure-driven managed outcome outside a model tool call."""
+        if not self._managed_session_started:
+            return {"status": "REJECTED"}
+        result = await asyncio.to_thread(
+            finalize_savings_call,
+            self._call_id,
+            self._customer_id,
+            outcome,
+            reason,
+            response_style="HINDI",
+        )
+        if result.get("status") == "FINALIZED":
+            self._managed_terminal = True
+            if self._managed_lease_heartbeat and not self._managed_lease_heartbeat.done():
+                self._managed_lease_heartbeat.cancel()
+            self._managed_customer_close = result.get("customer_close", "")
+            self._end_call_reason = f"Savings workflow finalized: {result.get('outcome', outcome)}"
+            if speak_close:
+                self._managed_close_waiting = True
+                await self._safe_response_create()
+        return result
 
     async def _response_watchdog_timer(self):
         """Safety net: if no response starts within 5s of speech ending, force one."""
@@ -1559,7 +2033,7 @@ class VoiceLiveSession:
                     "[%s] ⚠️ Watchdog: no response 5s after speech ended — forcing response.create",
                     self._call_id,
                 )
-                await self._send_json({"type": "response.create"})
+                await self._send_response_create()
         except asyncio.CancelledError:
             pass  # Normal — response started before timeout
 
@@ -1620,6 +2094,13 @@ class VoiceLiveSession:
                     "[%s] ⏳ Customer silent for %.0fs — ending call gracefully",
                     self._call_id, idle,
                 )
+                if self._managed_flow == "savings_account":
+                    await self._finalize_managed_call(
+                        "NO_RESPONSE",
+                        "Customer remained silent until the configured idle timeout.",
+                        speak_close=True,
+                    )
+                    return
                 # Ask the agent to say a brief goodbye; termination fires on
                 # response.done via the _pending_end_call path. This goodbye IS
                 # cancellable — if the customer comes back and speaks, keep going.
@@ -1655,7 +2136,7 @@ class VoiceLiveSession:
         human team so a recovery/commitment call always produces a follow-up.
         Runs the blocking send off the event loop and never raises.
         """
-        if self._handoff_email_sent:
+        if self._managed_flow == "savings_account" or self._handoff_email_sent:
             return
         self._handoff_email_sent = True  # guard against double-send / re-entry
         try:
@@ -1715,6 +2196,8 @@ class VoiceLiveSession:
         if self._call_ended:
             return
         self._call_ended = True
+        if self._managed_lease_heartbeat and not self._managed_lease_heartbeat.done():
+            self._managed_lease_heartbeat.cancel()
         # Estimate how long the farewell audio takes to finish playing in the
         # browser (PCM16 @ 24kHz → 48000 bytes/sec) and hold that long so we
         # don't cut off the goodbye.
@@ -1731,15 +2214,18 @@ class VoiceLiveSession:
         # Deterministic follow-up: if no email went out this session, send one
         # now (concurrently with the farewell grace period) so a recovery /
         # commitment call always yields a human follow-up.
-        email_task = asyncio.create_task(self._send_fallback_handoff_email())
+        email_task = None
+        if self._managed_flow != "savings_account":
+            email_task = asyncio.create_task(self._send_fallback_handoff_email())
         # Stop the idle watchdog if it's still running.
         if self._idle_monitor and not self._idle_monitor.done():
             self._idle_monitor.cancel()
         await asyncio.sleep(grace_s)
-        try:
-            await asyncio.wait_for(email_task, timeout=10)
-        except Exception:
-            pass
+        if email_task:
+            try:
+                await asyncio.wait_for(email_task, timeout=10)
+            except Exception:
+                pass
         if self.vl_ws:
             try:
                 await self.vl_ws.close()
@@ -1881,11 +2367,19 @@ class VoiceLiveSession:
         self._retrieved_items = {}
         self._retrieve_pending = len(self._conversation_item_ids)
 
-        for item_id in self._conversation_item_ids:
-            await self._send_json({
-                "type": "conversation.item.retrieve",
-                "item_id": item_id,
-            })
+        try:
+            for item_id in self._conversation_item_ids:
+                await self._send_json({
+                    "type": "conversation.item.retrieve",
+                    "item_id": item_id,
+                })
+        except ConnectionClosed:
+            self._retrieve_pending = 0
+            logger.info(
+                "[%s] Skipping conversation retrieval because Voice Live is already closed",
+                self._call_id,
+            )
+            return
 
         # Wait for all retrieve responses (up to 5s timeout)
         deadline = time.monotonic() + 5.0
@@ -1929,6 +2423,13 @@ class VoiceLiveSession:
         logger.info("[%s] " + "=" * 50, self._call_id)
 
     async def close(self):
+        if self._managed_session_started and not self._managed_terminal:
+            outcome = "NO_RESPONSE" if self._user_turn_count == 0 else "SYSTEM_ERROR"
+            await self._finalize_managed_call(
+                outcome,
+                "Browser connection closed before workflow finalization.",
+                speak_close=False,
+            )
         # ── Retrieve full conversation history from Voice Live ────
         await self._dump_conversation_history()
         
@@ -1970,6 +2471,7 @@ async def api_campaigns():
             "icon": c["icon"],
             "color": c["color"],
             "audience": c.get("audience"),
+            "managedFlow": c.get("managed_flow"),
         }
         for key, c in CAMPAIGN_REGISTRY.items()
     ]
@@ -1986,13 +2488,16 @@ async def api_customers():
         "(SELECT COUNT(*) FROM collections cl WHERE cl.customer_id = c.id) AS card_overdue, "
         "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue, "
         "(SELECT COUNT(*) FROM life_policies lp WHERE lp.customer_id = c.id "
-        "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue "
+        "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue, "
+        "(SELECT COUNT(*) FROM savings_applications sa WHERE sa.customer_id = c.id "
+        "  AND sa.status = 'INCOMPLETE') AS incomplete_savings_application "
         "FROM customers c ORDER BY c.name"
     )
     for r in rows:
         r["card_overdue"] = bool(r.get("card_overdue"))
         r["loan_overdue"] = bool(r.get("loan_overdue"))
         r["premium_overdue"] = bool(r.get("premium_overdue"))
+        r["incomplete_savings_application"] = bool(r.get("incomplete_savings_application"))
         r["overdue"] = r["card_overdue"] or r["loan_overdue"] or r["premium_overdue"]
     return jsonify(rows)
 
