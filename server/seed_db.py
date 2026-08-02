@@ -711,6 +711,58 @@ def seed_data(cur: sqlite3.Cursor):
     )
 
 
+def seed_savings_workflow(conn: sqlite3.Connection):
+    """Seed synthetic incomplete applications for Asha's managed campaign."""
+    from savings_account_tools import APPROVED_PRODUCT_SNAPSHOT, initialize_savings_schema
+
+    initialize_savings_schema(conn)
+    version = APPROVED_PRODUCT_SNAPSHOT["version"]
+    applications = [
+        (
+            "SA-2026-VIRU-001", "viru", "INCOMPLETE", "2026-07-29T14:20:00+05:30",
+            "mobile number verification", None, None, version,
+            "2026-07-29T14:20:00+05:30", "2026-07-29T14:24:00+05:30",
+        ),
+        (
+            "SA-2026-PRIYA-001", "priya", "INCOMPLETE", "2026-07-30T10:05:00+05:30",
+            "basic personal details", None, None, version,
+            "2026-07-30T10:05:00+05:30", "2026-07-30T10:11:00+05:30",
+        ),
+        (
+            "SA-2026-AMIT-001", "amit", "INCOMPLETE", "2026-07-31T17:40:00+05:30",
+            "mobile number verification", None, None, version,
+            "2026-07-31T17:40:00+05:30", "2026-07-31T17:44:00+05:30",
+        ),
+    ]
+    conn.executemany(
+        "INSERT INTO savings_applications "
+        "(application_id,customer_id,status,started_at,last_completed_step,selected_product,"
+        "confirmed_product,snapshot_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        applications,
+    )
+    conn.executemany(
+        "INSERT INTO serviceable_pin_codes (pin_code,city,state,serviceable) VALUES (?,?,?,?)",
+        [
+            ("400050", "Mumbai", "Maharashtra", 1),
+            ("400001", "Mumbai", "Maharashtra", 1),
+            ("500034", "Hyderabad", "Telangana", 1),
+            ("500081", "Hyderabad", "Telangana", 1),
+            ("380058", "Ahmedabad", "Gujarat", 1),
+            ("560034", "Bengaluru", "Karnataka", 1),
+            ("560066", "Bengaluru", "Karnataka", 1),
+            ("560001", "Bengaluru", "Karnataka", 1),
+            ("110001", "New Delhi", "Delhi", 1),
+            ("110002", "New Delhi", "Delhi", 1),
+            ("600001", "Chennai", "Tamil Nadu", 1),
+            ("700001", "Kolkata", "West Bengal", 1),
+            ("411001", "Pune", "Maharashtra", 1),
+            ("122001", "Gurugram", "Haryana", 1),
+            ("201301", "Noida", "Uttar Pradesh", 1),
+            ("500032", "unserviceable area", "Hyderabad", 0),
+        ],
+    )
+
+
 def main():
     if DB_PATH.exists():
         DB_PATH.unlink()
@@ -725,6 +777,7 @@ def main():
 
     print("Seeding data...")
     seed_data(cur)
+    seed_savings_workflow(conn)
 
     conn.commit()
 

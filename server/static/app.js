@@ -19,6 +19,9 @@ const CALL = (() => {
 const CAMPAIGN_ID = CALL.campaignId || 'home_loan';
 const CUSTOMER_ID = CALL.customerId || 'rajesh';
 const CALL_TONE = CALL.tone || 'cordial';
+const CALL_LANGUAGES = (Array.isArray(CALL.languages) && CALL.languages.length)
+    ? CALL.languages.slice(0, 3)
+    : ['english', 'hindi'];
 const AGENT_NAME = CALL.agentName || 'Agent';
 const CAMPAIGN_COLOR = CALL.campaignColor || '#4299e1';
 
@@ -128,8 +131,8 @@ async function startConversation() {
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-        // Send campaign + customer selection (and tone) as the first message
-        ws.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID, tone: CALL_TONE }));
+        // Send campaign + customer selection (tone + languages) as the first message
+        ws.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID, tone: CALL_TONE, languages: CALL_LANGUAGES }));
 
         updateStatus('connected');
         addSystemMessage('✅ Call connected — the agent is on the line.');

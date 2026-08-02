@@ -18,8 +18,27 @@ from .life_insurance_collections_agent import (
     LIFE_INSURANCE_COLLECTIONS_PROMPT,
     LIFE_INSURANCE_COLLECTIONS_TOOLS,
 )
+from .savings_account_sales_agent import (
+    SAVINGS_ACCOUNT_SALES_PROMPT,
+    SAVINGS_ACCOUNT_SALES_TOOLS,
+)
 
 CAMPAIGN_REGISTRY = {
+    "savings_account_completion": {
+        "prompt": SAVINGS_ACCOUNT_SALES_PROMPT,
+        "agent_name": "Asha",
+        "name": "Asha (Savings Account Assistant)",
+        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "tools": SAVINGS_ACCOUNT_SALES_TOOLS,
+        "company": "Contoso Bank",
+        "title": "Incomplete Savings Account",
+        "description": "Help a customer resume an incomplete FinServe Instant savings-account application.",
+        "icon": "🏦",
+        "color": "#0f766e",
+        "audience": "incomplete_savings_application",
+        "managed_flow": "savings_account",
+        "opening_purpose": "Confirm the intended recipient before revealing application details.",
+    },
     "life_insurance": {
         "prompt": LIFE_INSURANCE_PROMPT,
         "agent_name": "Ananya",

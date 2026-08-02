@@ -11,6 +11,48 @@ const launchBtn = document.getElementById('btn-launch');
 const hintEl = document.getElementById('launch-hint');
 const toneEl = document.getElementById('tone-select');
 const toneHintEl = document.getElementById('tone-hint');
+const langEl = document.getElementById('lang-select');
+const langHintEl = document.getElementById('lang-hint');
+
+// ── Language selector (multi-select, up to 3, order = priority) ───
+// The FIRST language picked is the one the bot opens in; it can switch
+// among all chosen languages. Selection order is tracked so "primary"
+// reflects what the operator picked first.
+const LANG_LABELS = {
+    english: 'English (India)', hindi: 'Hindi', marathi: 'Marathi', kannada: 'Kannada',
+    telugu: 'Telugu', tamil: 'Tamil', gujarati: 'Gujarati', odia: 'Odia (Oriya)',
+    bengali: 'Bengali', malayalam: 'Malayalam',
+};
+const MAX_LANGS = 3;
+let langOrder = ['english', 'hindi']; // default selection order (primary first)
+
+function updateLangHint() {
+    if (!langHintEl) return;
+    if (!langOrder.length) {
+        langHintEl.textContent = 'Pick at least one language (default: English + Hindi).';
+        return;
+    }
+    const primary = LANG_LABELS[langOrder[0]];
+    const others = langOrder.slice(1).map(k => LANG_LABELS[k]);
+    langHintEl.textContent = others.length
+        ? `Opens in ${primary}; can also switch to ${others.join(', ')}.`
+        : `The whole call will be in ${primary}.`;
+}
+
+if (langEl) {
+    langEl.addEventListener('change', () => {
+        const selected = Array.from(langEl.selectedOptions).map(o => o.value);
+        // Preserve prior order for still-selected items, then append newly picked ones.
+        langOrder = langOrder.filter(v => selected.includes(v));
+        selected.forEach(v => { if (!langOrder.includes(v)) langOrder.push(v); });
+        // Enforce the cap: keep the first MAX_LANGS picked; deselect the rest.
+        if (langOrder.length > MAX_LANGS) langOrder = langOrder.slice(0, MAX_LANGS);
+        Array.from(langEl.options).forEach(o => { o.selected = langOrder.includes(o.value); });
+        updateLangHint();
+    });
+    updateLangHint();
+}
+
 
 // ── Tone selector ────────────────────────────────────────────────
 // In collections, tonality escalates with contact attempts / days past due.
@@ -80,8 +122,7 @@ async function loadCustomers() {
 }
 
 // Populate the dropdown, filtered to the selected campaign's audience.
-// Collections campaigns declare audience 'card_overdue' or 'loan_overdue' so
-// customers with no dues for that product are hidden entirely.
+// Campaigns can declare an audience flag so only eligible customers are shown.
 function renderCustomers() {
     const camp = selectedCampaign ? campaignsById[selectedCampaign] : null;
     const audience = camp ? camp.audience : null;
@@ -90,11 +131,11 @@ function renderCustomers() {
     const prev = selectEl.value;
     selectEl.innerHTML = list.length
         ? '<option value="">— Select a customer —</option>'
-        : '<option value="">— No customers with dues for this campaign —</option>';
+        : '<option value="">— No eligible customers for this campaign —</option>';
     list.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
-        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}`;
+        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}${c.incomplete_savings_application ? ' · Application incomplete' : ''}`;
         selectEl.appendChild(opt);
     });
     if (prev && list.some(c => c.id === prev)) {
@@ -112,6 +153,7 @@ selectEl.addEventListener('change', () => {
             <div class="cust-row"><span>City</span><b>${c.city || '—'}</b></div>
             <div class="cust-row"><span>Phone</span><b>${c.phone || '—'}</b></div>
             ${c.overdue ? `<div class="cust-flag">⚠ ${c.card_overdue && c.loan_overdue ? 'Has overdue credit-card and vehicle-loan dues' : c.card_overdue ? 'Has an overdue credit-card balance' : c.loan_overdue ? 'Has an overdue vehicle-loan EMI' : 'Has an overdue life insurance premium'}</div>` : ''}
+            ${c.incomplete_savings_application ? '<div class="cust-flag">FinServe Instant application is incomplete</div>' : ''}
         `;
     } else {
         detailEl.innerHTML = '';
@@ -138,6 +180,7 @@ launchBtn.addEventListener('click', () => {
         campaignId: selectedCampaign,
         customerId: selectEl.value,
         tone: toneEl.value,
+        languages: langOrder.length ? langOrder.slice(0, MAX_LANGS) : ['english', 'hindi'],
         campaignTitle: campaignsById[selectedCampaign].title,
         agentName: campaignsById[selectedCampaign].agent,
         campaignIcon: campaignsById[selectedCampaign].icon,

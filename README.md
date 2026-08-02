@@ -19,6 +19,7 @@ single WebSocket).
 | 🏠 Home Loan Sales | **Priya** | Pitch a pre-approved home loan / balance-transfer offer and book an application. |
 | 🚗 Vehicle Loan Sales | **Kavya** | Pitch a pre-approved car loan with quick disbursal and drive to an application. |
 | 💳 Credit Card Collections | **Neha** | Recover an overdue payment and secure a promise-to-pay, respectfully and RBI-compliant. |
+| 🏦 Incomplete Savings Account | **Asha** | Resume an incomplete FinServe Instant application and prepare an eligible, consenting customer for KYC. |
 
 Each agent has its own persona, voice, system prompt, tool set, and a
 step-by-step **playbook** that shapes the call flow.
@@ -61,6 +62,9 @@ Azure Voice Live API  ──►  GPT-4.1-mini + Azure Speech STT + Dragon HD TTS
 - **`server/crm_tools.py`** — CRM/business functions exposed to the LLM
   (customer profile, offers, EMI calc, eligibility, collections dues,
   promise-to-pay, payment links, etc.).
+- **`server/savings_account_tools.py`** — backend-owned savings workflow,
+  product snapshot, consent state, callbacks, DNC, escalation, and idempotent
+  final disposition.
 - **`server/seed_db.py`** — builds and seeds the local SQLite database.
 - **`server/static/`** — frontend: `index.html` (campaign + customer selection
   console), `call.html` (live call UI), `console.js`, `app.js`, and the
@@ -101,6 +105,35 @@ This regenerates `server/crm.db` (git-ignored) with demo customers, loan
 products, negotiation rules, competitor rates, and overdue collections
 accounts.
 
+The seed includes incomplete savings applications for `amit`, `priya`, and
+`viru`, plus demo serviceable postal PIN codes.
+
+### Managed savings flow
+
+Unlike the older prompt-led campaigns, Asha uses a backend-managed flow:
+
+1. The server generates a call ID and binds it to one incomplete application.
+2. Voice Live transcribes the customer; automatic model responses are disabled.
+3. Before each response, the server injects the current SQLite state and the
+  versioned, approved product snapshot.
+4. The model proposes a step through one of eight allow-listed tools. The server
+  injects call/customer identity and atomically accepts or rejects the change.
+5. One customer utterance can advance at most one state. The next state is
+  explained or asked, then Asha waits for a fresh customer response.
+6. Before requesting postal-PIN digits, Asha explains the area-availability
+  purpose, clarifies that it is not a banking PIN, and asks permission.
+7. Only `finalize_call` writes the terminal CRM disposition. The first write wins,
+  and its approved close is spoken before the WebSocket is torn down.
+
+The prompt controls wording and interprets natural language. It is not the
+authorization or state-transition boundary.
+
+### Run tests
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
 ### 4. Run the server
 
 ```powershell
@@ -117,3 +150,6 @@ Open <http://localhost:8000>, pick a campaign and a customer, and click
 - The database is disposable — re-run `python seed_db.py` any time to reset it.
 - Voice cannot be exercised without valid Azure Voice Live credentials in
   `.env`; the console UI and CRM APIs work regardless.
+- Calls are browser voice simulations, not PSTN calls. Audio is not persisted.
+- The callback table is a demo queue, not a telephony scheduler.
+- Container-local SQLite is suitable for this demo, not durable production state.
