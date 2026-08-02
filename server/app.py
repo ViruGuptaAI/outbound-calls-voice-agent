@@ -400,13 +400,7 @@ def _build_managed_savings_config(
                 "appended_text_after_truncation": " -- [user interrupted | response incomplete]",
             },
             "input_audio_transcription": {
-                "model": "azure-speech",
-                "language": "hi-IN,en-IN",
-                "phrase_list": [
-                    "Asha", "आशा", "Contoso Bank", "FinServe Instant",
-                    "Instant Classic", "Instant Super", "PAN", "Aadhaar",
-                    "KYC", "PIN code", "callback", "do not call",
-                ],
+                "model": "mai-transcribe",
             },
             "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
             "input_audio_echo_cancellation": {
@@ -451,7 +445,11 @@ def build_session_config(
     company = campaign.get("company", "Contoso Bank")
     # Operator-selected conversation languages (validated; primary = first).
     lang_keys = normalize_languages(languages)
-    lang_locales = ",".join(LANGUAGE_REGISTRY[k]["locale"] for k in lang_keys)
+    # MAI Transcribe takes a SINGLE ISO-639-1 code (e.g. "hi"), or none = auto
+    # multilingual; it can't take a multi-locale list, so pin only when exactly one.
+    stt_config: dict[str, Any] = {"model": "mai-transcribe"}
+    if len(lang_keys) == 1:
+        stt_config["language"] = LANGUAGE_REGISTRY[lang_keys[0]]["locale"].split("-")[0]
 
     # Look up the campaign's playbook + its required tool names
     playbook_text, playbook_tool_names = get_playbook(campaign_key)
@@ -667,24 +665,7 @@ def build_session_config(
                 ),
             },
             # ── Input audio transcription ────────────────────────────────
-            "input_audio_transcription": {
-                "model": "azure-speech",
-                "language": lang_locales,
-                "phrase_list": [
-                    "Contoso Bank", "Contoso Life", "credit card", "debit card",
-                    "home loan", "car loan", "vehicle loan", "balance transfer",
-                    "pre-approved", "preapproved", "processing fee", "top-up loan",
-                    "EMI", "CIBIL", "KYC", "UPI", "NEFT", "RTGS", "IMPS",
-                    "interest rate", "outstanding", "minimum due", "overdue",
-                    "late fee", "settlement", "promise to pay", "payment link",
-                    "life insurance", "life cover", "term insurance", "term plan",
-                    "sum assured", "premium", "policy", "nominee", "maturity",
-                    "grace period", "revival", "lapsed", "paid-up", "underwriting",
-                    "medical check-up", "free-look period",
-                    "Priya", "Kavya", "Neha", "Meera", "Ananya", "Anjali",
-                    "प्रिया", "काव्या", "नेहा", "मीरा", "अनन्या", "अंजली",
-                ],
-            },
+            "input_audio_transcription": stt_config,
             # ── Noise / echo handling ────────────────────────────────────
             "input_audio_noise_reduction": {
                 "type": "azure_deep_noise_suppression",
@@ -1078,11 +1059,13 @@ class VoiceLiveSession:
                 match event_type:
                     # ── Lifecycle ─────────────────────────────────────────
                     case "session.created":
-                        vl_session_id = event.get("session", {}).get("id", "unknown")
+                        session_obj = event.get("session", {})
+                        vl_session_id = session_obj.get("id", "unknown")
                         logger.info(
-                            "[%s] Session created (vl_session_id=%s)",
+                            "[%s] Session created (vl_session_id=%s, stt=%s)",
                             self._call_id,
                             vl_session_id,
+                            session_obj.get("input_audio_transcription"),
                         )
 
                     case "conversation.item.created":
@@ -1108,9 +1091,10 @@ class VoiceLiveSession:
 
                     case "session.updated":
                         logger.info(
-                            "[%s] Session updated (agent: %s)",
+                            "[%s] Session updated (agent: %s, stt=%s)",
                             self._call_id,
                             self._agent_name,
+                            event.get("session", {}).get("input_audio_transcription"),
                         )
 
                     case "input_audio_buffer.cleared":

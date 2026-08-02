@@ -611,7 +611,9 @@ class SavingsCampaignContractTestCase(unittest.TestCase):
         tool_names = {tool["name"] for tool in config["tools"]}
 
         self.assertFalse(config["turn_detection"]["create_response"])
-        self.assertEqual(config["input_audio_transcription"]["language"], "hi-IN,en-IN")
+        # Managed savings is bilingual (hi+en) → MAI Transcribe auto multilingual (no forced language).
+        self.assertEqual(config["input_audio_transcription"]["model"], "mai-transcribe")
+        self.assertNotIn("language", config["input_audio_transcription"])
         self.assertNotIn("end_call", tool_names)
         self.assertNotIn("escalate_to_human", tool_names)
         self.assertNotIn("CALL TONE — ASSERTIVE", config["instructions"])
