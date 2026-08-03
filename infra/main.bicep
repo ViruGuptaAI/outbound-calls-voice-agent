@@ -31,6 +31,12 @@ param acsEmailSender string = ''
 @secure()
 param acsEmailConnectionString string = ''
 
+@description('Ambient background noise preset mixed into the agent voice (none | office | call_center).')
+param ambientPreset string = ''
+
+@description('Ambient noise loudness vs speech (0.0-1.0). Empty uses the app default.')
+param ambientGain string = ''
+
 var tags = { 'azd-env-name': environmentName }
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
 
@@ -54,6 +60,8 @@ module resources 'resources.bicep' = {
     escalationEmail: escalationEmail
     acsEmailSender: acsEmailSender
     acsEmailConnectionString: acsEmailConnectionString
+    ambientPreset: ambientPreset
+    ambientGain: ambientGain
   }
 }
 

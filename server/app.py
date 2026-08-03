@@ -28,6 +28,7 @@ from campaigns import CAMPAIGN_REGISTRY, get_campaign, DEFAULT_CAMPAIGN  # noqa:
 from campaigns.tool_schemas import END_CALL, ESCALATE_TO_HUMAN  # noqa: E402
 from crm_tools import TOOL_FUNCTIONS  # noqa: E402
 from playbooks import get_playbook  # noqa: E402
+from ambient_mixer import get_ambient_mixer, ambient_config_summary, SAMPLE_RATE as AMBIENT_SAMPLE_RATE  # noqa: E402
 from savings_account_tools import (  # noqa: E402
     SAVINGS_CALL_HEARTBEAT_SECONDS,
     SAVINGS_TOOL_FUNCTIONS,
@@ -411,7 +412,7 @@ def _build_managed_savings_config(
             "voice": {
                 "name": voice["name"],
                 "type": "azure-standard",
-                "temperature": 0.6,
+                "temperature": 0.5,
                 "style": voice["style"],
                 "pitch": voice["pitch"],
                 "rate": voice["rate"],
@@ -2467,14 +2468,20 @@ async def api_customers():
     """Return the demo customers (with per-product overdue flags) for the picker."""
     from quart import jsonify
     from crm_tools import _query
+    from savings_account_tools import _demo_reset_enabled
+    # With demo-reset on, a finalized savings app is restored to INCOMPLETE at call
+    # start, so any customer with a savings app is demo-eligible (not just INCOMPLETE).
+    savings_pred = (
+        "COUNT(*)" if _demo_reset_enabled()
+        else "SUM(CASE WHEN sa.status = 'INCOMPLETE' THEN 1 ELSE 0 END)"
+    )
     rows = _query(
         "SELECT c.id, c.name, c.segment, c.city, c.phone, "
         "(SELECT COUNT(*) FROM collections cl WHERE cl.customer_id = c.id) AS card_overdue, "
         "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue, "
         "(SELECT COUNT(*) FROM life_policies lp WHERE lp.customer_id = c.id "
         "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue, "
-        "(SELECT COUNT(*) FROM savings_applications sa WHERE sa.customer_id = c.id "
-        "  AND sa.status = 'INCOMPLETE') AS incomplete_savings_application "
+        f"(SELECT {savings_pred} FROM savings_applications sa WHERE sa.customer_id = c.id) AS incomplete_savings_application "
         "FROM customers c ORDER BY c.name"
     )
     for r in rows:
@@ -2484,6 +2491,21 @@ async def api_customers():
         r["incomplete_savings_application"] = bool(r.get("incomplete_savings_application"))
         r["overdue"] = r["card_overdue"] or r["loan_overdue"] or r["premium_overdue"]
     return jsonify(rows)
+
+
+@app.route("/api/ambient")
+async def api_ambient():
+    """Continuous ambient bed (PCM16 mono @ 24 kHz) for the browser to loop; 204 when off."""
+    from quart import Response
+    mixer = get_ambient_mixer()
+    pcm = mixer.bed_pcm() if mixer is not None else b""
+    if not pcm:
+        return Response(b"", status=204)
+    return Response(
+        pcm,
+        content_type="application/octet-stream",
+        headers={"X-Sample-Rate": str(AMBIENT_SAMPLE_RATE), "Cache-Control": "no-store"},
+    )
 
 
 @app.websocket("/web/ws")
@@ -2557,6 +2579,15 @@ async def _prewarm_auth():
             logger.info("Auth token pre-warmed successfully")
         except Exception as e:
             logger.warning("Auth pre-warm failed (will retry on first connection): %s", e)
+
+
+@app.before_serving
+async def _log_ambient_config():
+    """Announce + pre-load the ambient mixer at startup so the first call is instant."""
+    logger.info(ambient_config_summary())
+    # Build the shared mixer now (loads the WAV off the event loop) — the
+    # AmbientMixer log then confirms whether the source is a file or synthetic.
+    await asyncio.to_thread(get_ambient_mixer)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
