@@ -94,7 +94,12 @@ _NEXT_ACTION = {
         "as 'हमने देखा / हमारी team ने देखा' (we noticed), not as reciting that a form was created. Do not "
         "enumerate completed steps, do not recite the start date, do not say they need not redo anything, "
         "and do not read this verbatim. Do not reuse the recipient-confirmation answer for availability; "
-        "wait for a new customer utterance that directly answers this question."
+        "wait for a new customer utterance that directly answers this question. If they hesitate or give a "
+        "soft no ('not now', 'I don't need it', 'I already have an account', 'no time'), do NOT treat it as "
+        "final: warmly acknowledge, give one honest reason to finish now — they already began this "
+        "application, it is quick and fully digital with no branch visit, and there is even a zero-balance "
+        "option — and gently re-invite them to complete it in a couple of minutes. Make at most two such "
+        "honest attempts; only a clear, firm, or repeated refusal (or 'stop'/'do not call') is NOT_INTERESTED."
     ),
     "PIN_CAPTURE": (
         "Warmly ask the customer for their area PIN code so you can take the application forward — for "
