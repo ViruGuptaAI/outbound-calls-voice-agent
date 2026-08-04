@@ -8,6 +8,7 @@ import os
 import socket
 import sys
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from campaigns import CAMPAIGN_REGISTRY, get_campaign, DEFAULT_CAMPAIGN  # noqa:
 from campaigns.tool_schemas import END_CALL, ESCALATE_TO_HUMAN  # noqa: E402
 from crm_tools import TOOL_FUNCTIONS  # noqa: E402
 from playbooks import get_playbook  # noqa: E402
+from ambient_mixer import get_ambient_mixer, ambient_config_summary, SAMPLE_RATE as AMBIENT_SAMPLE_RATE  # noqa: E402
 from savings_account_tools import (  # noqa: E402
     SAVINGS_CALL_HEARTBEAT_SECONDS,
     SAVINGS_TOOL_FUNCTIONS,
@@ -311,71 +313,54 @@ _token_expiry = 0  # epoch seconds
 # ──────────────────────────────────────────────────────────────────────────────
 _MANAGED_TURN_GUARD = """
 MANDATORY TURN PROCEDURE:
-1. Read the latest customer utterance plus the authoritative call_state before
-    speaking. That utterance may answer only state_when_latest_customer_utterance_arrived.
-    If current_state_was_entered_after_latest_utterance is true, do not submit a
-    result; explain or ask the new state's next_action and wait for a new reply.
-2. In AVAILABILITY, phrases such as "convenient hai", "abhi karte hain",
-    "chalo complete kar lete hain", "help karo", or "karo" mean AVAILABLE.
-    This applies only when the customer says them after the availability question.
-    A recipient-confirmation "haan" or "boliye" can never also mean AVAILABLE.
-3. Never submit an answer for a future state and never speak a future-state
-    question before the current transition returns ACCEPTED. If the customer
-    volunteers a later fact, do not submit it. Ask the relevant single question
-    when that state becomes current and wait for a fresh answer.
-    At most ONE state transition may be accepted per CUSTOMER UTTERANCE, including
-    across chained responses. After one is accepted, explain or ask the new state's
-    next_action and WAIT for the customer to speak again. Never reuse the same
-    "yes", "haan", "boliye", or acknowledgement to satisfy a second state.
-4. Never mention a backend, system, tool, result, state, stage, rejection,
-    alignment, or internal workflow. Recover silently in natural customer language.
-5. Ask exactly one question per turn, never a list. Use feminine Hindi forms such
-    as "समझ गई" and "बताती हूँ", never masculine forms such as "समझ गया".
-6. last_completed_step_spoken names a step that is ALREADY COMPLETE. Never tell
-    the customer to repeat it or invent its mechanics.
-7. When next_action directs a tool call or finalization, perform it before any
-    customer-facing speech.
-8. For a postal PIN readback, speak captured_pin_readback exactly. Never print a
-    six-digit sequence, interpret it as a whole number, use markdown, or use bullets.
-9. A customer question or trust objection is NOT a step result. If the customer
-    asks why, what, how, or whether information is necessary without providing the
-    current state's required answer, call NO tool. Answer the question directly.
-    During PIN_CAPTURE, if the customer asks why or whether it is safe, explain that
-    this is a postal PIN, used only to check whether digital savings-account opening
-    is available in their area, it cannot access their account or transactions, and
-    sharing it on this call is optional. Then ask once, warmly, for the area PIN code;
-    do not badger or repeat the request in the same response.
-10. SCRIPT: Write every Hindi word in Devanagari (देवनागरी). Never romanize Hindi in
-    Latin letters — say "आपका", "क्या", "है", "बताइए", never "aapka", "kya", "hai",
-    "bataiye". Keep everyday English banking words in Latin rather than translating
-    them into stilted Hindi: PIN code, KYC, PAN, Aadhaar, savings account,
-    application, steps, process, form, account, Instant Classic, Instant Super — for
-    example say "कुछ बाकी steps", never "कुछ बाकी कदम".
-11. NEVER repeat a question the customer already answered, and never restate a
-    disclosure, product comparison, or list you have already given this call. Say
-    each explanation at most once. If the customer confirms, tells you to proceed,
-    or shows impatience ("कर दो", "करो", "बता दिया", "कितनी बार बोलूँ", "चलेगा",
-    "खोल दो"), treat it as agreement: submit the current state's result and advance —
-    do NOT restate anything or offer to explain again.
+1. Interpret the latest customer utterance only against
+   state_when_latest_customer_utterance_arrived and choose only from
+   allowed_step_results. Never submit a volunteered answer for a future state.
+2. At most ONE state transition may be accepted per customer utterance. If
+   current_state_was_entered_after_latest_utterance or
+   transition_already_accepted_for_latest_customer_utterance is true, follow the
+   current next_action naturally and wait for a fresh customer reply.
+3. A question or objection is not a step result. Answer it directly without a tool
+   unless the same utterance also unambiguously answers the current state.
+4. When next_action directs a tool call or finalization, perform it before speaking.
+   Never ask a future-state question until the current transition returns ACCEPTED.
 """.strip()
+
+
+def _build_managed_turn_instructions(context: dict) -> str:
+    """Render the response-scoped instructions used for one managed model turn."""
+    return (
+        _MANAGED_TURN_GUARD
+        + "\n\nAUTHORITATIVE RUNTIME CONTEXT FOR THIS TURN. "
+        "Never read this JSON aloud. Handle only call_state and follow next_action.\n"
+        + json.dumps(context, ensure_ascii=False)
+    )
+
+
+def _build_managed_savings_opening(first_name: str) -> str:
+    return (
+        f"नमस्कार {first_name} जी, मैं Contoso Bank की virtual assistant Asha बोल रही हूँ। "
+        f"क्या मेरी बात {first_name} जी से हो रही है?"
+    )
+
+
+def _latest_customer_decimal_digits(transcript: list[tuple[str, str]]) -> str:
+    for role, text in reversed(transcript):
+        if role == "user":
+            return "".join(
+                str(unicodedata.decimal(char))
+                for char in text
+                if char.isdecimal()
+            )
+    return ""
 
 
 def _build_managed_savings_config(
     campaign: dict,
-    playbook_text: str,
     playbook_tool_names: frozenset[str] | None,
-    runtime_context: dict | None,
 ) -> dict:
     """Build the isolated Voice Live configuration for the managed savings flow."""
     instructions = campaign["prompt"]
-    if playbook_text:
-        instructions += "\n" + playbook_text
-    if runtime_context:
-        instructions += (
-            "\n\n# AUTHORITATIVE RUNTIME CONTEXT\n"
-            "This JSON is backend-owned. Never read it aloud or expose its field names.\n"
-            + json.dumps(runtime_context, ensure_ascii=False)
-        )
 
     tools = [
         tool for tool in campaign["tools"]
@@ -411,14 +396,14 @@ def _build_managed_savings_config(
             "voice": {
                 "name": voice["name"],
                 "type": "azure-standard",
-                "temperature": 0.6,
+                "temperature": 0.5,
                 "style": voice["style"],
                 "pitch": voice["pitch"],
                 "rate": voice["rate"],
                 "volume": voice["volume"],
             },
             "input_audio_sampling_rate": 24000,
-            "reasoning_effort": "none",
+            # "reasoning_effort": "none",
             "max_response_output_tokens": "320",
             "tools": tools,
             "tool_choice": "auto",
@@ -431,7 +416,6 @@ def build_session_config(
     customer_name: str = "",
     tone: str = DEFAULT_TONE,
     languages: list[str] | None = None,
-    runtime_context: dict | None = None,
 ) -> dict:
     """
     Build the session.update payload for an outbound campaign agent.
@@ -457,9 +441,7 @@ def build_session_config(
     if campaign.get("managed_flow") == "savings_account":
         return _build_managed_savings_config(
             campaign,
-            playbook_text,
             playbook_tool_names,
-            runtime_context,
         )
 
     # Assemble instructions: base prompt + playbook
@@ -680,7 +662,7 @@ def build_session_config(
             "input_audio_sampling_rate": 24000,
             # ── Model behaviour ──────────────────────────────────────────
             # "temperature": 0.1,
-            "reasoning_effort":"none",
+            # "reasoning_effort":"none",
             "max_response_output_tokens": "320",
         },
     }
@@ -932,7 +914,6 @@ class VoiceLiveSession:
                 customer_name=self._customer_name,
                 tone=self._tone,
                 languages=self._languages,
-                runtime_context=runtime_context,
             )
         )
 
@@ -941,10 +922,7 @@ class VoiceLiveSession:
         campaign = CAMPAIGN_REGISTRY[self._campaign_key]
         first_name = self._customer_name.split()[0] if self._customer_name else "there"
         if self._managed_flow == "savings_account":
-            opening = (
-                f"नमस्कार {first_name} जी! मैं Asha बोल रही हूँ, Contoso Bank से। "
-                f"क्या मेरी बात {first_name} जी से हो रही है?"
-            )
+            opening = _build_managed_savings_opening(first_name)
             self._managed_opening_pending = True
             await self._send_json({
                 "type": "response.create",
@@ -1467,6 +1445,60 @@ class VoiceLiveSession:
         fn_name = event.get("name", "")
         args_str = event.get("arguments", "{}")
 
+        try:
+            proposed_args = json.loads(args_str) if args_str.strip() else {}
+        except json.JSONDecodeError:
+            proposed_args = {}
+
+        proposed_result = str(proposed_args.get("result", "")).strip().upper()
+        is_pin_capture_attempt = (
+            self._managed_flow == "savings_account"
+            and self._managed_expected_state == "PIN_CAPTURE"
+            and (
+                (fn_name == "submit_step_result" and proposed_result == "CAPTURED")
+                or fn_name == "validate_pin_code"
+            )
+        )
+        if is_pin_capture_attempt:
+            argument_name = "value" if fn_name == "submit_step_result" else "pin_code"
+            proposed_pin = "".join(
+                char for char in str(proposed_args.get(argument_name, "")) if char.isdigit()
+            )
+            spoken_digits = _latest_customer_decimal_digits(self._transcript_log)
+            if spoken_digits and (len(spoken_digits) != 6 or proposed_pin != spoken_digits):
+                if len(spoken_digits) > 6:
+                    recovery_action = (
+                        "The customer said more than six digits. Do not infer, truncate, or confirm any "
+                        "subset. Briefly explain that a postal PIN must contain exactly six digits, then "
+                        "ask them to repeat only the six-digit postal PIN."
+                    )
+                    status = "INVALID_PIN_LENGTH"
+                elif len(spoken_digits) < 6:
+                    recovery_action = (
+                        "The customer said fewer than six digits. Do not fill in missing digits. Briefly "
+                        "explain that a postal PIN must contain exactly six digits, then ask them to repeat it."
+                    )
+                    status = "INVALID_PIN_LENGTH"
+                else:
+                    recovery_action = (
+                        "The proposed PIN does not exactly match the six digits in the latest customer "
+                        "utterance. Do not confirm or store it; ask the customer to repeat the six digits."
+                    )
+                    status = "PIN_TRANSCRIPT_MISMATCH"
+                await self._send_json({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps({
+                            "status": status,
+                            "recovery_action": recovery_action,
+                        }),
+                    },
+                })
+                await self._safe_response_create()
+                return
+
         if self._managed_flow == "savings_account" and fn_name not in SAVINGS_TOOL_FUNCTIONS:
             logger.error("[%s] Blocked non-savings tool in managed flow: %s", self._call_id, fn_name)
             await self._send_json({
@@ -1513,11 +1545,6 @@ class VoiceLiveSession:
                 await self._safe_response_create()
                 return
 
-            try:
-                proposed_args = json.loads(args_str) if args_str.strip() else {}
-            except json.JSONDecodeError:
-                proposed_args = {}
-            proposed_result = str(proposed_args.get("result", "")).strip().upper()
             if proposed_result not in self._managed_allowed_step_results:
                 if (
                     self._managed_expected_state == "PIN_CAPTURE"
@@ -1963,12 +1990,7 @@ class VoiceLiveSession:
             "type": "response.create",
             "response": {
                 "modalities": ["audio", "text"],
-                "instructions": (
-                    _MANAGED_TURN_GUARD
-                    + "\n\nAUTHORITATIVE RUNTIME CONTEXT FOR THIS TURN. "
-                    "Never read this JSON aloud. Handle only call_state and follow next_action.\n"
-                    + json.dumps(context, ensure_ascii=False)
-                ),
+                "instructions": _build_managed_turn_instructions(context),
             },
         })
 
@@ -2467,14 +2489,20 @@ async def api_customers():
     """Return the demo customers (with per-product overdue flags) for the picker."""
     from quart import jsonify
     from crm_tools import _query
+    from savings_account_tools import _demo_reset_enabled
+    # With demo-reset on, a finalized savings app is restored to INCOMPLETE at call
+    # start, so any customer with a savings app is demo-eligible (not just INCOMPLETE).
+    savings_pred = (
+        "COUNT(*)" if _demo_reset_enabled()
+        else "SUM(CASE WHEN sa.status = 'INCOMPLETE' THEN 1 ELSE 0 END)"
+    )
     rows = _query(
         "SELECT c.id, c.name, c.segment, c.city, c.phone, "
         "(SELECT COUNT(*) FROM collections cl WHERE cl.customer_id = c.id) AS card_overdue, "
         "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue, "
         "(SELECT COUNT(*) FROM life_policies lp WHERE lp.customer_id = c.id "
         "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue, "
-        "(SELECT COUNT(*) FROM savings_applications sa WHERE sa.customer_id = c.id "
-        "  AND sa.status = 'INCOMPLETE') AS incomplete_savings_application "
+        f"(SELECT {savings_pred} FROM savings_applications sa WHERE sa.customer_id = c.id) AS incomplete_savings_application "
         "FROM customers c ORDER BY c.name"
     )
     for r in rows:
@@ -2484,6 +2512,21 @@ async def api_customers():
         r["incomplete_savings_application"] = bool(r.get("incomplete_savings_application"))
         r["overdue"] = r["card_overdue"] or r["loan_overdue"] or r["premium_overdue"]
     return jsonify(rows)
+
+
+@app.route("/api/ambient")
+async def api_ambient():
+    """Continuous ambient bed (PCM16 mono @ 24 kHz) for the browser to loop; 204 when off."""
+    from quart import Response
+    mixer = get_ambient_mixer()
+    pcm = mixer.bed_pcm() if mixer is not None else b""
+    if not pcm:
+        return Response(b"", status=204)
+    return Response(
+        pcm,
+        content_type="application/octet-stream",
+        headers={"X-Sample-Rate": str(AMBIENT_SAMPLE_RATE), "Cache-Control": "no-store"},
+    )
 
 
 @app.websocket("/web/ws")
@@ -2557,6 +2600,15 @@ async def _prewarm_auth():
             logger.info("Auth token pre-warmed successfully")
         except Exception as e:
             logger.warning("Auth pre-warm failed (will retry on first connection): %s", e)
+
+
+@app.before_serving
+async def _log_ambient_config():
+    """Announce + pre-load the ambient mixer at startup so the first call is instant."""
+    logger.info(ambient_config_summary())
+    # Build the shared mixer now (loads the WAV off the event loop) — the
+    # AmbientMixer log then confirms whether the source is a file or synthetic.
+    await asyncio.to_thread(get_ambient_mixer)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

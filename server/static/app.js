@@ -107,6 +107,9 @@ async function startConversation() {
     // Initialize AudioWorklet for playback (must be done after user gesture)
     await initAudioWorklet();
 
+    // Start the continuous ambient bed (no-op if ambient is off server-side).
+    startAmbient();
+
     const source = audioContext.createMediaStreamSource(mediaStream);
     scriptProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
@@ -255,6 +258,43 @@ async function initAudioWorklet() {
     await audioContext.audioWorklet.addModule('/static/audio-processor.js');
     workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
     workletNode.connect(audioContext.destination);
+}
+
+// ── Continuous ambient bed (server room tone, looped for the whole call) ─
+// A separate always-on layer, independent of the agent's TTS: it keeps playing
+// between turns and through barge-in, so the background never cuts out.
+let ambientSource = null;
+
+async function startAmbient() {
+    if (!audioContext || ambientSource) return;
+    try {
+        const res = await fetch('/api/ambient');
+        if (res.status !== 200) return;  // 204 = ambient disabled server-side
+        const raw = await res.arrayBuffer();
+        const int16 = new Int16Array(raw);
+        if (!int16.length) return;
+        const sr = parseInt(res.headers.get('X-Sample-Rate') || '24000', 10) || 24000;
+        const buf = audioContext.createBuffer(1, int16.length, sr);
+        const ch = buf.getChannelData(0);
+        for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+        const src = audioContext.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+        src.connect(audioContext.destination);
+        src.start();
+        ambientSource = src;
+        console.log(`[Ambient] continuous bed started (${(int16.length / sr).toFixed(1)}s loop @ ${sr}Hz)`);
+    } catch (e) {
+        console.warn('[Ambient] failed to start:', e);
+    }
+}
+
+function stopAmbient() {
+    if (ambientSource) {
+        try { ambientSource.stop(); } catch (_) {}
+        try { ambientSource.disconnect(); } catch (_) {}
+        ambientSource = null;
+    }
 }
 
 function playAudio(pcm16Buffer) {
@@ -498,6 +538,7 @@ function cleanup() {
     document.getElementById('btn-stop').disabled = true;
     updateStatus('disconnected');
 
+    stopAmbient();
     if (callTimer) { clearInterval(callTimer); callTimer = null; }
     if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
     if (mediaStream) {

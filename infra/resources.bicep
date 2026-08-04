@@ -17,6 +17,9 @@ param acsEmailSender string = ''
 @secure()
 param acsEmailConnectionString string = ''
 
+param ambientPreset string = ''
+param ambientGain string = ''
+
 var prefix = 'oc'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -156,6 +159,14 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'AZURE_USER_ASSIGNED_IDENTITY_CLIENT_ID'
               value: uami.properties.clientId
+            }
+            {
+              name: 'AMBIENT_PRESET'
+              value: ambientPreset
+            }
+            {
+              name: 'AMBIENT_GAIN'
+              value: ambientGain
             }
           ]
         }

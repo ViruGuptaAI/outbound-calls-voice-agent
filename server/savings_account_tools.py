@@ -87,25 +87,36 @@ _NEXT_ACTION = {
         "hello, or an unrelated acknowledgement is not confirmation. Reveal no application details until accepted."
     ),
     "AVAILABILITY": (
-        "Open this turn like a warm, real relationship manager who has just reviewed the customer's file. "
-        "In one or two natural, conversational sentences, say your team noticed their FinServe Instant "
-        "savings-account application — their account-opening process — was started but left midway, and "
-        "warmly offer to help them complete it right now; then check whether this is a good time. Frame it "
-        "as 'हमने देखा / हमारी team ने देखा' (we noticed), not as reciting that a form was created. Do not "
+        "After identity confirmation, acknowledge the customer briefly and naturally. In one or two "
+        "conversational sentences, say they started a FinServe Instant savings-account application but it "
+        "was not completed, offer to help move it forward, and ask directly whether they have two minutes "
+        "now. A natural pattern is: 'जी Priya जी, धन्यवाद। आपने FinServe Instant savings account के लिए "
+        "application शुरू की थी, जो पूरी नहीं हो पाई। मैं उसे आगे बढ़ाने में आपकी मदद कर सकती हूँ — क्या "
+        "अभी आपके पास दो मिनट हैं?' Replace Priya with customer_first_name and vary the wording naturally. "
+        "Speak from the customer's action rather than implying that the bank or a team noticed or reviewed "
+        "their application. Ask directly for two minutes instead of using a translated convenience check. Do not "
         "enumerate completed steps, do not recite the start date, do not say they need not redo anything, "
         "and do not read this verbatim. Do not reuse the recipient-confirmation answer for availability; "
-        "wait for a new customer utterance that directly answers this question."
+        "wait for a new customer utterance that directly answers this question. If they hesitate or give a "
+        "soft no ('not now', 'I don't need it', 'I already have an account', 'no time'), do NOT treat it as "
+        "final. Phrases such as 'convenient है', 'अभी करते हैं', 'चलो complete कर लेते हैं', 'help करो', "
+        "or 'करो' mean AVAILABLE only when said after this availability question. Warmly acknowledge a "
+        "hesitation, give one honest reason to finish now — they already began this "
+        "application, it is quick and fully digital with no branch visit, and there is even a zero-balance "
+        "option — and gently re-invite them to complete it in a couple of minutes. Make at most two such "
+        "honest attempts; only a clear, firm, or repeated refusal (or 'stop'/'do not call') is NOT_INTERESTED."
     ),
     "PIN_CAPTURE": (
         "Warmly ask the customer for their area PIN code so you can take the application forward — for "
-        "example, 'application आगे बढ़ाने के लिए मुझे आपका area का PIN code चाहिए, बता दीजिए?'. Accept whatever "
-        "they say, even all six digits together, and never make them repeat it one digit at a time. If they "
-        "ask why or seem unsure, briefly reassure them using postal_pin_purpose, then wait. If they clearly "
+        "example, 'application आगे बढ़ाने के लिए मुझे आपका area का PIN code चाहिए, बता दीजिए?'. "
+        "Submit CAPTURED only when the customer gives exactly six digits. If they give fewer or more "
+        "than six, never infer, discard, or truncate digits; briefly ask for the six-digit postal PIN "
+        "again. If they ask why or seem unsure, briefly reassure them using postal_pin_purpose, then wait. If they clearly "
         "refuse, submit NOT_INTERESTED."
     ),
     "PIN_CONFIRMATION": (
-        "Read captured_pin_readback exactly and ask for confirmation. Never display the raw six-digit "
-        "sequence or speak it as one number. After confirmation, submit CONFIRMED before calling validate_pin_code."
+        "Read captured_pin_readback digit by digit and ask for confirmation. Never display the raw six-digit sequence or speak PIN code as one number. "
+        "After confirmation, submit CONFIRMED before calling validate_pin_code."
     ),
     "AGE_CHECK": "Ask whether the customer is at least eighteen years old.",
     "RESIDENCY_CHECK": "Ask whether the customer is an Indian resident.",
@@ -353,7 +364,7 @@ def _has_accepted_result(
 
 
 def get_savings_runtime_context(call_id: str, customer_id: str) -> dict[str, Any]:
-    """Return only customer-safe facts and the backend's current workflow directive."""
+    """Return the backend directive and only facts relevant to the current state."""
     with closing(_connect()) as db:
         row = db.execute(
             "SELECT s.*, a.started_at, a.last_completed_step, a.selected_product, "
@@ -370,32 +381,70 @@ def get_savings_runtime_context(call_id: str, customer_id: str) -> dict[str, Any
     data = _row_dict(row)
     state = data["call_state"]
     first_name = (data.get("name") or "").split()[0]
-    return {
-        "current_datetime_ist": _now_ist(),
+    context: dict[str, Any] = {
         "call_state": state,
-        "opening_status": data["opening_status"],
-        "recipient_status": data["recipient_status"],
-        "customer_first_name": first_name,
-        "application_started_date_spoken": _spoken_date(data["started_at"]),
-        "last_completed_step_spoken": data.get("last_completed_step") or "बीच में",
-        "last_completed_step_status": "COMPLETED_DO_NOT_REPEAT",
-        "estimated_eligibility_time_spoken": "कुछ ही minutes",
-        "captured_pin_readback": _pin_readback(data.get("captured_pin")),
-        "postal_pin_purpose": (
+        "allowed_step_results": _ALLOWED_STEP_RESULTS.get(state, []),
+        "next_action": _NEXT_ACTION.get(state, "Stop and create a technical escalation."),
+    }
+
+    if state == "OPENING":
+        context["opening_status"] = data["opening_status"]
+    elif state == "RECIPIENT_CONFIRMATION":
+        context.update({
+            "customer_first_name": first_name,
+            "opening_status": data["opening_status"],
+            "recipient_status": data["recipient_status"],
+        })
+    elif state == "AVAILABILITY":
+        context.update({
+            "customer_first_name": first_name,
+            "application_started_date_spoken": _spoken_date(data["started_at"]),
+            "last_completed_step_spoken": data.get("last_completed_step") or "बीच में",
+            "last_completed_step_status": "COMPLETED_DO_NOT_REPEAT",
+            "estimated_eligibility_time_spoken": "कुछ ही minutes",
+            "application_status": data["application_status"],
+        })
+    elif state == "PIN_CAPTURE":
+        context["postal_pin_purpose"] = (
             "The postal PIN is used only to check whether digital savings-account opening is available "
             "in the customer's area. It is not a banking PIN, cannot access an account or transaction, "
             "and sharing it on this call is optional. Without it, this assisted eligibility check cannot continue."
-        ),
-        "selected_product": data.get("selected_product"),
-        "confirmed_product": data.get("confirmed_product"),
-        "application_status": data["application_status"],
-        "ready_to_finalize": bool(data["ready_to_finalize"]),
-        "callback_id": data.get("callback_id"),
-        "escalation_id": data.get("escalation_id"),
-        "allowed_step_results": _ALLOWED_STEP_RESULTS.get(state, []),
-        "next_action": _NEXT_ACTION.get(state, "Stop and create a technical escalation."),
-        "approved_product_snapshot": APPROVED_PRODUCT_SNAPSHOT,
-    }
+        )
+    elif state == "PIN_CONFIRMATION":
+        context["captured_pin_readback"] = _pin_readback(data.get("captured_pin"))
+    elif state == "CALLBACK_CAPTURE":
+        context["callback_id"] = data.get("callback_id")
+    elif state == "ESCALATION":
+        context["escalation_id"] = data.get("escalation_id")
+
+    product_codes: tuple[str, ...] = ()
+    if state == "PRODUCT_SELECTION":
+        product_codes = PRODUCT_CODES
+    elif state == "PRODUCT_CONFIRMATION":
+        selected_product = data.get("selected_product")
+        context["selected_product"] = selected_product
+        if selected_product in PRODUCT_CODES:
+            product_codes = (selected_product,)
+    elif state == "FINAL_QUESTION":
+        confirmed_product = data.get("confirmed_product")
+        context.update({
+            "confirmed_product": confirmed_product,
+            "ready_to_finalize": bool(data["ready_to_finalize"]),
+        })
+        if confirmed_product in PRODUCT_CODES:
+            product_codes = (confirmed_product,)
+
+    if product_codes:
+        context["approved_product_snapshot"] = {
+            "version": APPROVED_PRODUCT_SNAPSHOT["version"],
+            "demo_only": APPROVED_PRODUCT_SNAPSHOT["demo_only"],
+            "products": {
+                code: APPROVED_PRODUCT_SNAPSHOT["products"][code]
+                for code in product_codes
+            },
+        }
+
+    return context
 
 
 def start_savings_call(call_id: str, customer_id: str) -> dict[str, Any]:

@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock
 SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
 sys.path.insert(0, str(SERVER_DIR))
 
-from app import VoiceLiveSession, build_session_config  # noqa: E402  # pyright: ignore[reportMissingImports]
+from app import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+    VoiceLiveSession,
+    _build_managed_savings_opening,
+    build_session_config,
+)
 from campaigns import CAMPAIGN_REGISTRY  # noqa: E402  # pyright: ignore[reportMissingImports]
 from playbooks import PLAYBOOK_REGISTRY  # noqa: E402  # pyright: ignore[reportMissingImports]
 from savings_account_tools import (  # noqa: E402  # pyright: ignore[reportMissingImports]
@@ -259,6 +263,8 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         call_id = self.start_call()
         context = get_savings_runtime_context(call_id, self.customer_id)
         self.assertIn("हाँ बोलिए", context["next_action"])
+        self.assertNotIn("approved_product_snapshot", context)
+        self.assertNotIn("postal_pin_purpose", context)
         self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
         context = get_savings_runtime_context(call_id, self.customer_id)
         self.assertEqual(
@@ -283,6 +289,44 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.assertEqual(
             get_savings_runtime_context(call_id, self.customer_id)["call_state"],
             "PIN_CONFIRMATION",
+        )
+
+    def test_runtime_context_includes_product_facts_only_in_product_states(self):
+        call_id = self.start_call()
+        self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
+        availability = get_savings_runtime_context(call_id, self.customer_id)
+        self.assertIn("last_completed_step_spoken", availability)
+        self.assertNotIn("approved_product_snapshot", availability)
+        self.assertNotIn("postal_pin_purpose", availability)
+        self.assertIn("क्या अभी आपके पास दो मिनट हैं?", availability["next_action"])
+        self.assertNotIn("हमने देखा", availability["next_action"])
+        self.assertNotIn("क्या यह बात करने का अच्छा समय है?", availability["next_action"])
+
+        self.submit(call_id, "AVAILABILITY", "AVAILABLE")
+        pin_capture = get_savings_runtime_context(call_id, self.customer_id)
+        self.assertIn("postal_pin_purpose", pin_capture)
+        self.assertNotIn("approved_product_snapshot", pin_capture)
+
+        self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "400050")
+        self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        self.assertEqual(validate_pin_code(call_id, self.customer_id, "400050")["status"], "SERVICEABLE")
+        self.submit(call_id, "AGE_CHECK", "ELIGIBLE")
+        self.submit(call_id, "RESIDENCY_CHECK", "RESIDENT")
+        self.submit(call_id, "DOCUMENT_CHECK", "AVAILABLE")
+
+        product_selection = get_savings_runtime_context(call_id, self.customer_id)
+        self.assertEqual(
+            set(product_selection["approved_product_snapshot"]["products"]),
+            {"INSTANT_CLASSIC", "INSTANT_SUPER"},
+        )
+        self.assertNotIn("postal_pin_purpose", product_selection)
+
+        self.submit(call_id, "PRODUCT_SELECTION", "SELECTED", "INSTANT_CLASSIC")
+        product_confirmation = get_savings_runtime_context(call_id, self.customer_id)
+        self.assertEqual(product_confirmation["selected_product"], "INSTANT_CLASSIC")
+        self.assertEqual(
+            set(product_confirmation["approved_product_snapshot"]["products"]),
+            {"INSTANT_CLASSIC"},
         )
 
     def test_not_serviceable_close_never_exposes_backend_wording(self):
@@ -484,6 +528,46 @@ class SavingsWorkflowTestCase(unittest.TestCase):
             ).fetchone()[0]
         self.assertIsNone(pin_status)
 
+    def test_overlength_spoken_pin_cannot_be_truncated_to_six_digits(self):
+        call_id = self.start_call()
+        self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
+        self.submit(call_id, "AVAILABILITY", "AVAILABLE")
+
+        session = VoiceLiveSession(
+            None,
+            customer_id=self.customer_id,
+            campaign_key="savings_account_completion",
+        )
+        session._call_id = call_id
+        session._user_turn_count = 1
+        session._transcript_log.append(("user", "हाँ, मेरा पिन कोड है अ... 400098650।"))
+        session._send_json = AsyncMock()
+        session._send_to_browser = AsyncMock()
+        session._safe_response_create = AsyncMock()
+        asyncio.run(session._send_response_create())
+
+        attempts = (
+            ("submit_step_result", {"result": "CAPTURED", "value": "400098"}),
+            ("validate_pin_code", {"pin_code": "400098"}),
+        )
+        for index, (tool_name, arguments) in enumerate(attempts, start=1):
+            with self.subTest(tool_name=tool_name):
+                asyncio.run(
+                    session._handle_function_call({
+                        "call_id": f"tool-overlength-{index}",
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments),
+                    })
+                )
+                output = json.loads(
+                    session._send_json.await_args_list[-1].args[0]["item"]["output"]
+                )
+                self.assertEqual(output["status"], "INVALID_PIN_LENGTH")
+                self.assertIn("more than six digits", output["recovery_action"])
+                context = get_savings_runtime_context(call_id, self.customer_id)
+                self.assertEqual(context["call_state"], "PIN_CAPTURE")
+                self.assertNotIn("captured_pin_readback", context)
+
     def test_wrong_number_requires_an_accepted_recipient_result(self):
         call_id = self.start_call()
         premature = finalize_call(
@@ -576,6 +660,14 @@ class SavingsWorkflowTestCase(unittest.TestCase):
 
 
 class SavingsCampaignContractTestCase(unittest.TestCase):
+    def test_managed_opening_is_transparent_and_protects_application_details(self):
+        opening = _build_managed_savings_opening("Viru")
+
+        self.assertEqual(opening.count("Viru जी"), 2)
+        self.assertIn("Contoso Bank की virtual assistant Asha", opening)
+        self.assertNotIn("application", opening)
+        self.assertTrue(opening.endswith("क्या मेरी बात Viru जी से हो रही है?"))
+
     def test_campaign_tools_match_the_playbook_and_are_closed(self):
         campaign = CAMPAIGN_REGISTRY["savings_account_completion"]
         _, allowed_names = PLAYBOOK_REGISTRY["savings_account_completion"]
@@ -595,17 +687,11 @@ class SavingsCampaignContractTestCase(unittest.TestCase):
         self.assertNotIn("current_state", submit_schema["parameters"]["properties"])
 
     def test_managed_session_disables_automatic_responses_and_generic_blocks(self):
-        context = {
-            "call_state": "OPENING",
-            "next_action": "Deliver the approved opening only.",
-            "approved_product_snapshot": {"version": "test"},
-        }
         config = build_session_config(
             "savings_account_completion",
             customer_name="Test Customer",
             tone="aggressive",
             languages=["english"],
-            runtime_context=context,
         )["session"]
         tool_names = {tool["name"] for tool in config["tools"]}
 
@@ -616,11 +702,11 @@ class SavingsCampaignContractTestCase(unittest.TestCase):
         self.assertNotIn("end_call", tool_names)
         self.assertNotIn("escalate_to_human", tool_names)
         self.assertNotIn("CALL TONE — ASSERTIVE", config["instructions"])
-        self.assertIn("AUTHORITATIVE RUNTIME CONTEXT", config["instructions"])
-        normalized_instructions = " ".join(config["instructions"].split())
-        self.assertIn("one state transition may be accepted per customer utterance", normalized_instructions)
-        self.assertIn("A question or objection is not a step result", normalized_instructions)
-        self.assertIn("sharing it is optional", normalized_instructions)
+        self.assertNotIn("AUTHORITATIVE RUNTIME CONTEXT", config["instructions"])
+        self.assertNotIn("MANAGED SAVINGS WORKFLOW", config["instructions"])
+        self.assertIn("# TONALITY AND VOICE DELIVERY", config["instructions"])
+        self.assertIn("# LANGUAGE AND PRONUNCIATION", config["instructions"])
+        self.assertNotIn("# TERMINATION", config["instructions"])
 
 
 if __name__ == "__main__":

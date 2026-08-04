@@ -28,6 +28,12 @@
     },
     "acsEmailConnectionString": {
       "value": "${ACS_EMAIL_CONNECTION_STRING}"
+    },
+    "ambientPreset": {
+      "value": "${AMBIENT_PRESET}"
+    },
+    "ambientGain": {
+      "value": "${AMBIENT_GAIN}"
     }
   }
 }
