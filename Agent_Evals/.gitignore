@@ -1,0 +1,10 @@
+# Generated evaluation artifacts — do not commit large/audio/output blobs.
+datasets/audio/
+output/
+output_calls/
+.env
+
+# Keep the generated JSONL + manifest out of source control; they are reproducible
+# via build_datasets.py. Comment these out if you prefer to version them.
+datasets/*.jsonl
+datasets/scenarios_manifest.json
