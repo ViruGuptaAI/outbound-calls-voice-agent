@@ -898,9 +898,15 @@ class VoiceLiveSession:
                 message = runtime_context.get("message", "This customer is not eligible for this campaign.")
                 logger.warning("[%s] Managed savings call rejected: %s", self._call_id, message)
                 await self._send_to_browser(
-                    json.dumps({"Kind": "AgentTranscription", "Text": message, "Agent": "System"})
+                    json.dumps({
+                        "Kind": "CallRejected",
+                        "Code": runtime_context.get("error", "CALL_REJECTED"),
+                        "Message": message,
+                    })
                 )
-                await self._terminate_call(message)
+                self._call_ended = True
+                if self.vl_ws:
+                    await self.vl_ws.close()
                 return
             self._managed_session_started = True
             self._managed_lease_heartbeat = asyncio.create_task(
@@ -916,6 +922,7 @@ class VoiceLiveSession:
                 languages=self._languages,
             )
         )
+        await self._send_to_browser(json.dumps({"Kind": "CallStarted"}))
 
         # Trigger the OUTBOUND opening: the agent introduces itself and states
         # the purpose of the call, then asks permission to proceed.

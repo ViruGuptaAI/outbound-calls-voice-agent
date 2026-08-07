@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
@@ -35,7 +35,6 @@ from savings_account_tools import (  # noqa: E402  # pyright: ignore[reportMissi
     start_savings_call,
     submit_step_result,
     touch_savings_call,
-    validate_pin_code,
 )
 
 
@@ -159,9 +158,8 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
         self.submit(call_id, "AVAILABILITY", "AVAILABLE")
         self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "400050")
-        self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
-        pin_result = validate_pin_code(call_id, self.customer_id, "400050")
-        self.assertEqual(pin_result["status"], "SERVICEABLE")
+        confirm = self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        self.assertEqual(confirm["next_state"], "AGE_CHECK")
         self.submit(call_id, "AGE_CHECK", "ELIGIBLE")
         self.submit(call_id, "RESIDENCY_CHECK", "RESIDENT")
         self.submit(call_id, "DOCUMENT_CHECK", "AVAILABLE")
@@ -236,6 +234,42 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.assertEqual(old_session, ("TERMINAL", "SYSTEM_ERROR"))
         self.assertEqual(disposition, ("SYSTEM_ERROR",))
 
+    def test_active_call_rejection_never_reports_connected_or_ended(self):
+        first = start_savings_call("CALL-1", self.customer_id)
+        self.assertNotIn("error", first)
+
+        browser_ws = AsyncMock()
+        voice_ws = AsyncMock()
+        session = VoiceLiveSession(
+            browser_ws,
+            customer_id=self.customer_id,
+            campaign_key="savings_account_completion",
+        )
+        session._call_id = "CALL-2"
+
+        async def start_rejected_session():
+            with (
+                patch("app.get_auth_headers", new=AsyncMock(return_value={})),
+                patch("app.ws_connect", new=AsyncMock(return_value=voice_ws)),
+                patch("crm_tools.get_customer_profile", return_value={"name": "Test Customer"}),
+            ):
+                await session.start()
+
+        asyncio.run(start_rejected_session())
+
+        messages = [
+            json.loads(call.args[0])
+            for call in browser_ws.send.await_args_list
+        ]
+        self.assertEqual(messages, [{
+            "Kind": "CallRejected",
+            "Code": "APPLICATION_ALREADY_IN_CALL",
+            "Message": "This application already has an active call.",
+        }])
+        self.assertTrue(session._call_ended)
+        self.assertFalse(session._managed_session_started)
+        voice_ws.close.assert_awaited_once()
+
     def test_stale_transition_and_premature_hot_lead_are_rejected(self):
         call_id = self.start_call()
         self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
@@ -284,12 +318,13 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         context = get_savings_runtime_context(call_id, self.customer_id)
         self.assertEqual(context["captured_pin_readback"], "four, zero, zero, zero, five, zero")
 
-        premature = validate_pin_code(call_id, self.customer_id, "400050")
-        self.assertEqual(premature["status"], "CONFIRMATION_REQUIRED")
+        # The PIN is not validated or advanced until the customer confirms the read-back.
         self.assertEqual(
             get_savings_runtime_context(call_id, self.customer_id)["call_state"],
             "PIN_CONFIRMATION",
         )
+        confirm = self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        self.assertEqual(confirm["next_state"], "AGE_CHECK")
 
     def test_runtime_context_includes_product_facts_only_in_product_states(self):
         call_id = self.start_call()
@@ -309,7 +344,6 @@ class SavingsWorkflowTestCase(unittest.TestCase):
 
         self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "400050")
         self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
-        self.assertEqual(validate_pin_code(call_id, self.customer_id, "400050")["status"], "SERVICEABLE")
         self.submit(call_id, "AGE_CHECK", "ELIGIBLE")
         self.submit(call_id, "RESIDENCY_CHECK", "RESIDENT")
         self.submit(call_id, "DOCUMENT_CHECK", "AVAILABLE")
@@ -334,11 +368,8 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
         self.submit(call_id, "AVAILABILITY", "AVAILABLE")
         self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "560066")
-        self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
-        self.assertEqual(
-            validate_pin_code(call_id, self.customer_id, "560066")["status"],
-            "NOT_SERVICEABLE",
-        )
+        confirm = self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        self.assertIn("NOT_ELIGIBLE_PIN", confirm["next_action"])
         final = finalize_call(
             call_id,
             self.customer_id,
@@ -356,9 +387,8 @@ class SavingsWorkflowTestCase(unittest.TestCase):
         self.submit(call_id, "RECIPIENT_CONFIRMATION", "CONFIRMED")
         self.submit(call_id, "AVAILABILITY", "AVAILABLE")
         self.submit(call_id, "PIN_CAPTURE", "CAPTURED", "400024")
-        self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
-        result = validate_pin_code(call_id, self.customer_id, "400024")
-        self.assertEqual(result["status"], "SERVICEABLE")
+        confirm = self.submit(call_id, "PIN_CONFIRMATION", "CONFIRMED")
+        self.assertEqual(confirm["next_state"], "AGE_CHECK")
         self.assertEqual(
             get_savings_runtime_context(call_id, self.customer_id)["call_state"], "AGE_CHECK"
         )
@@ -674,7 +704,7 @@ class SavingsCampaignContractTestCase(unittest.TestCase):
         tools = campaign["tools"]
         tool_names = {tool["name"] for tool in tools}
 
-        self.assertEqual(len(tools), 8)
+        self.assertEqual(len(tools), 7)
         self.assertEqual(tool_names, set(allowed_names))
         self.assertNotIn("end_call", tool_names)
         self.assertNotIn("escalate_to_human", tool_names)

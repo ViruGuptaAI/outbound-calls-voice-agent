@@ -1,4 +1,5 @@
-"""Ambient noise — a looping background ambience played as a CONTINUOUS bed under the
+"""
+Ambient noise — a looping background ambience played as a CONTINUOUS bed under the
 agent's call so it sounds like a real person in a real room (a subtle office tone or a
 busier call-centre floor) for the whole call, not just while the agent is speaking.
 

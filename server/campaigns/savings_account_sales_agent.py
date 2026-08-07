@@ -8,7 +8,6 @@ from .tool_schemas import (
     REGISTER_DO_NOT_CALL,
     SCHEDULE_CALLBACK,
     SUBMIT_STEP_RESULT,
-    VALIDATE_PIN_CODE,
 )
 
 
@@ -104,7 +103,6 @@ the unresolved question for the current state.
 
 SAVINGS_ACCOUNT_SALES_TOOLS = [
     SUBMIT_STEP_RESULT,
-    VALIDATE_PIN_CODE,
     GET_PRODUCT_INFORMATION,
     CHECK_APPLICATION_STATUS,
     SCHEDULE_CALLBACK,

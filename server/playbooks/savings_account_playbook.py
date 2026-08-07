@@ -22,7 +22,6 @@ an identity or earlier-step answer after the backend enters a new state.
 SAVINGS_ACCOUNT_TOOL_NAMES = frozenset(
     {
         "submit_step_result",
-        "validate_pin_code",
         "get_product_information",
         "check_application_status",
         "schedule_callback",
