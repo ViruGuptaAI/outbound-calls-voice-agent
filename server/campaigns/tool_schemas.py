@@ -400,6 +400,75 @@ GET_REVIVAL_OPTIONS = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+# ── Vehicle insurance renewal tools ─────────────────────────────────────────
+GET_VEHICLE_INSURANCE_POLICY = {
+    "type": "function",
+    "name": "get_vehicle_insurance_policy",
+    "description": "Get the customer-bound EXISTING motor policy: masked policy and registration references, vehicle, coverage, expiry, IDV, premium, NCB, deductible, claims and add-ons. Call only after identity confirmation and before stating any customer-specific policy fact.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+GET_VEHICLE_INSURANCE_INFORMATION = {
+    "type": "function",
+    "name": "get_vehicle_insurance_information",
+    "description": "Get approved customer-facing guidance for a vehicle-insurance renewal topic. Use this for policy questions instead of inventing coverage, process, exclusion, inspection, claim, NCB, IDV, document, payment or add-on rules.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "enum": ["coverage", "ncb", "idv", "add_ons", "claims", "deductible", "exclusions", "inspection", "documents", "payment", "break_in"],
+                "description": "The renewal question topic to explain.",
+            }
+        },
+        "required": ["topic"],
+    },
+}
+
+GET_VEHICLE_RENEWAL_QUOTE = {
+    "type": "function",
+    "name": "get_vehicle_renewal_quote",
+    "description": "Calculate an INDICATIVE, component-level renewal quote using the customer policy's renewal IDV, rating zone, claim-based NCB progression, current own-damage rate, third-party tariff, add-ons and tax. premium_comparison contains the auditable prior/current breakdown and exact explanation_factors. Use only those factors to explain a change; never speculate. Call before quoting any premium and again whenever coverage or add-ons change.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "coverage_type": {
+                "type": "string",
+                "enum": ["comprehensive", "third_party", "standalone_own_damage"],
+                "description": "Requested renewal coverage. Third-party-only does not cover damage to the customer's own vehicle.",
+            },
+            "add_ons": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["zero_depreciation", "roadside_assistance", "engine_protection", "return_to_invoice", "ncb_protection"]},
+                "description": "Requested optional add-ons. Use an empty list for none.",
+            },
+        },
+        "required": ["coverage_type", "add_ons"],
+    },
+}
+
+RECORD_VEHICLE_RENEWAL_INTENT = {
+    "type": "function",
+    "name": "record_vehicle_renewal_intent",
+    "description": "Record the customer's specific intent to renew. The backend recalculates the selected quote and persists its grounded amount. Call only after the customer confirms coverage, add-ons, payment mode and intended payment date. This does NOT issue or activate the policy.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "coverage_type": {
+                "type": "string",
+                "enum": ["comprehensive", "third_party", "standalone_own_damage"],
+            },
+            "add_ons": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["zero_depreciation", "roadside_assistance", "engine_protection", "return_to_invoice", "ncb_protection"]},
+            },
+            "preferred_payment_date": {"type": "string", "description": "The specific date stated by the customer, preferably YYYY-MM-DD."},
+            "payment_mode": {"type": "string", "enum": ["payment_link", "UPI", "net_banking", "card", "branch"]},
+        },
+        "required": ["coverage_type", "add_ons", "preferred_payment_date", "payment_mode"],
+    },
+}
+
 # ── Managed savings-account completion tools ────────────────────────────────
 SUBMIT_STEP_RESULT = {
     "type": "function",

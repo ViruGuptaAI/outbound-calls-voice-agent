@@ -49,7 +49,7 @@ class AmbientMixer:
     PRESETS = {
         "none": {"file": None, "texture": None},
         "office": {"file": "office.wav", "texture": "office"},
-        "call_center": {"file": "callcenter.wav", "texture": "call_center"},
+        "call_center": {"file": "CallCenter_AmbientNoise.wav", "texture": "call_center"},
     }
 
     def __init__(self, preset: str = "none", gain: float | None = None):

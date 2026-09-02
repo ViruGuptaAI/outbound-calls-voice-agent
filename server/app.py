@@ -146,7 +146,7 @@ TONE_INSTRUCTIONS = {
 #     explicit emotion styles ('angry', 'shouting', …) + `styledegree` (0.01–2),
 #     so the hard tier actually sounds forceful. NOTE: Kavya is a hi-IN voice; it
 #     is best suited to Hindi/Hinglish collections calls.
-_VOICE_DIYA = "en-IN-Diya:DragonHDV2.3Neural"
+_VOICE_DIYA = "en-IN-Diya:DragonHDV2.3.5Neural"
 _VOICE_KAVYA_MAI = "hi-IN-Kavya:MAI-Voice-2"
 TONE_VOICE = {
     "cordial":    {"name": _VOICE_DIYA, "style": "empathetic", "pitch": "call center slightly fast", "rate": "adaptive", "volume": "-5%"},
@@ -247,6 +247,8 @@ _TOOL_NAMES_FOR_REDACTION = [
     "escalate_to_human", "submit_step_result", "validate_pin_code",
     "get_product_information", "check_application_status", "schedule_callback",
     "register_do_not_call", "create_escalation", "finalize_call",
+    "get_vehicle_insurance_policy", "get_vehicle_insurance_information",
+    "get_vehicle_renewal_quote", "record_vehicle_renewal_intent",
 ]
 _TOOL_NAME_PATTERN = _re.compile(
     r"\b(?:" + "|".join(_re.escape(n) for n in _TOOL_NAMES_FOR_REDACTION) + r")\b",
@@ -300,6 +302,10 @@ TOOL_DISPLAY_LABELS = {
     "register_do_not_call": "Applying contact preference",
     "create_escalation": "Creating human follow-up",
     "finalize_call": "Saving final outcome",
+    "get_vehicle_insurance_policy": "Loading vehicle policy",
+    "get_vehicle_insurance_information": "Checking renewal guidance",
+    "get_vehicle_renewal_quote": "Calculating renewal quote",
+    "record_vehicle_renewal_intent": "Recording renewal choice",
 }
 
 # ── Cached credential (avoids spawning az.cmd on every connection) ────────────
@@ -601,7 +607,9 @@ def build_session_config(
         first_name = customer_name.split()[0]
         instructions = (
             f"CUSTOMER YOU ARE CALLING: {customer_name}\n"
-            f"Address the customer as {first_name}. This is an OUTBOUND call that YOU placed. "
+            f"The customer's literal first name is '{first_name}'. Never translate the name into "
+            f"another language or use it as an adjective/pet name. Use it sparingly, not in every turn. "
+            f"This is an OUTBOUND call that YOU placed. "
             f"Your VERY FIRST turn is the opening: greet {first_name}, introduce yourself by name "
             f"AND state you are calling from {company} (say exactly '{company}', never any other "
             f"company name), give the reason, and ask permission. "
@@ -619,7 +627,10 @@ def build_session_config(
             "type": "azure_semantic_vad_multilingual",
             "threshold": 0.6,
             "prefix_padding_ms": 700,
-            "silence_duration_ms": 400,
+            # Natural Hindi/Hinglish includes short thinking pauses; 400 ms was
+            # splitting one customer thought into multiple turns and making the
+            # agent jump in before the customer had finished.
+            "silence_duration_ms": 650,
             "create_response": True,
             "interrupt_response": True,
             "speech_duration_ms": 200,
@@ -814,6 +825,7 @@ class VoiceLiveSession:
         # ── Follow-up email state ─────────────────────────────────────────────
         self._handoff_email_sent: bool = False  # True once any escalation/handoff email is sent
         self._recorded_ptp: dict | None = None  # last promise-to-pay details (for the handoff email)
+        self._recorded_vehicle_renewal: dict | None = None  # grounded renewal intent for handoff
         # ── Call termination state ────────────────────────────────────────────
         self._call_ended: bool = False  # True once we've begun tearing the call down
         self._pending_end_call: bool = False  # agent asked to hang up; fire on response.done
@@ -946,26 +958,38 @@ class VoiceLiveSession:
             company = campaign.get("company", "Contoso Bank")
             primary_label = LANGUAGE_REGISTRY[self._languages[0]]["label"]
             is_english = self._languages[0] == "english"
+            opening_script = campaign.get("opening_scripts", {}).get(self._languages[0])
             # Front-load a hard language mandate so the greeting is deterministic, not probabilistic.
             lang_mandate = (
                 f"LANGUAGE — MANDATORY: Speak your ENTIRE opening (greeting AND question) in {primary_label}. "
-                + ("" if is_english else f"Every word must be in {primary_label}; do NOT use English at all. ")
+                + ("" if is_english else (
+                    f"Use natural everyday {primary_label}, not formal word-for-word translation. "
+                    "Familiar insurance/product terms may stay in English when Indian callers normally use them. "
+                ))
             )
             greet_line = (
                 f"Introduce yourself first: warmly greet {first_name} and say you are "
                 f"{campaign['agent_name']} from {company} — phrased naturally in {primary_label}, "
                 f"not translated word-for-word. Do not skip your name or the company. "
             )
-            opening_instructions = (
-                lang_mandate
-                + f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
-                + greet_line
-                + f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
-                + f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
-                + f"The example wording above is illustrative — say it in {primary_label}. "
-                + f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
-                + f"numbers or account details yet. Remember: the whole opening must be in {primary_label}."
-            )
+            if opening_script:
+                opening_script = opening_script.format(first_name=first_name)
+                opening_instructions = (
+                    f"Speak exactly this short opening, naturally and with no additions, translation, "
+                    f"policy details or tool call:\n{opening_script}"
+                )
+            else:
+                opening_instructions = (
+                    lang_mandate
+                    + f"This is the very start of an OUTBOUND phone call that YOU placed to {first_name}. "
+                    + greet_line
+                    + f"Then give ONE short trigger-based reason for the call. {campaign['opening_purpose']} "
+                    + f"{campaign.get('opening_ask', 'Then ask if this is a good time to talk for a couple of minutes.')} "
+                    + f"The example wording above is illustrative — say it in {primary_label}. "
+                    + f"Keep it warm, natural, and under three sentences. Do NOT quote any specific "
+                    + f"numbers or account details yet. Use the customer's name literally and never translate it. "
+                    + f"Remember: the whole opening must be naturally phrased in {primary_label}."
+                )
             await self._send_json({
                 "type": "response.create",
                 "response": {
@@ -1907,6 +1931,12 @@ class VoiceLiveSession:
                     "reference": result.get("reference"),
                 }
             if (
+                fn_name == "record_vehicle_renewal_intent"
+                and isinstance(result, dict)
+                and not result.get("error")
+            ):
+                self._recorded_vehicle_renewal = dict(result)
+            if (
                 self._managed_flow == "savings_account"
                 and fn_name == "create_escalation"
                 and result.get("status") in ("CREATED", "QUEUED")
@@ -2156,7 +2186,24 @@ class VoiceLiveSession:
             from crm_tools import send_escalation
 
             ptp = self._recorded_ptp
-            if ptp:
+            renewal = self._recorded_vehicle_renewal
+            if renewal:
+                amount = renewal.get("premium_amount")
+                amount_str = f"₹{amount:,.0f}" if isinstance(amount, (int, float)) else str(amount)
+                reason = "Vehicle-insurance renewal intent recorded — follow through to payment and policy issuance."
+                summary = (
+                    f"Customer selected {renewal.get('coverage_type', 'vehicle insurance')} cover "
+                    f"at an indicative premium of {amount_str}, intending to pay by "
+                    f"{renewal.get('preferred_payment_date', 'the agreed date')} via "
+                    f"{renewal.get('payment_mode', 'the agreed mode')} "
+                    f"(reference {renewal.get('reference', 'n/a')}). The policy is not yet issued."
+                )
+                action_items = [
+                    "Confirm successful premium payment and proposal validation",
+                    "Issue the renewed policy and send the policy document to the customer",
+                    "Resolve any inspection or endorsement requirement before confirming cover",
+                ]
+            elif ptp:
                 amount = ptp.get("amount")
                 amount_str = f"₹{amount:,.0f}" if isinstance(amount, (int, float)) else str(amount)
                 reason = "Promise-to-pay recorded — a human must follow up to ensure it is honoured."
@@ -2509,6 +2556,8 @@ async def api_customers():
         "(SELECT COUNT(*) FROM loan_collections lc WHERE lc.customer_id = c.id) AS loan_overdue, "
         "(SELECT COUNT(*) FROM life_policies lp WHERE lp.customer_id = c.id "
         "  AND lp.status IN ('In Grace','Lapsed')) AS premium_overdue, "
+        "(SELECT COUNT(*) FROM vehicle_insurance_policies vip WHERE vip.customer_id = c.id "
+        "  AND vip.renewal_status IN ('Due Soon','Overdue')) AS vehicle_policy_expiring, "
         f"(SELECT {savings_pred} FROM savings_applications sa WHERE sa.customer_id = c.id) AS incomplete_savings_application "
         "FROM customers c ORDER BY c.name"
     )
@@ -2516,6 +2565,7 @@ async def api_customers():
         r["card_overdue"] = bool(r.get("card_overdue"))
         r["loan_overdue"] = bool(r.get("loan_overdue"))
         r["premium_overdue"] = bool(r.get("premium_overdue"))
+        r["vehicle_policy_expiring"] = bool(r.get("vehicle_policy_expiring"))
         r["incomplete_savings_application"] = bool(r.get("incomplete_savings_application"))
         r["overdue"] = r["card_overdue"] or r["loan_overdue"] or r["premium_overdue"]
     return jsonify(rows)

@@ -135,7 +135,7 @@ function renderCustomers() {
     list.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
-        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}${c.incomplete_savings_application ? ' · Application incomplete' : ''}`;
+        opt.textContent = `${c.name} · ${c.segment}${c.overdue ? ' · ⚠ Overdue' : ''}${c.vehicle_policy_expiring ? ' · Vehicle policy due' : ''}${c.incomplete_savings_application ? ' · Application incomplete' : ''}`;
         selectEl.appendChild(opt);
     });
     if (prev && list.some(c => c.id === prev)) {
@@ -153,6 +153,7 @@ selectEl.addEventListener('change', () => {
             <div class="cust-row"><span>City</span><b>${c.city || '—'}</b></div>
             <div class="cust-row"><span>Phone</span><b>${c.phone || '—'}</b></div>
             ${c.overdue ? `<div class="cust-flag">⚠ ${c.card_overdue && c.loan_overdue ? 'Has overdue credit-card and vehicle-loan dues' : c.card_overdue ? 'Has an overdue credit-card balance' : c.loan_overdue ? 'Has an overdue vehicle-loan EMI' : 'Has an overdue life insurance premium'}</div>` : ''}
+            ${c.vehicle_policy_expiring ? '<div class="cust-flag">Vehicle insurance policy is due for renewal</div>' : ''}
             ${c.incomplete_savings_application ? '<div class="cust-flag">FinServe Instant application is incomplete</div>' : ''}
         `;
     } else {

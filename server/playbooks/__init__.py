@@ -17,6 +17,10 @@ from .life_insurance_collections_playbook import (
     LIFE_INSURANCE_COLLECTIONS_PLAYBOOK,
     LIFE_INSURANCE_COLLECTIONS_TOOL_NAMES,
 )
+from .vehicle_insurance_renewal_playbook import (
+    VEHICLE_INSURANCE_RENEWAL_PLAYBOOK,
+    VEHICLE_INSURANCE_RENEWAL_TOOL_NAMES,
+)
 from .savings_account_playbook import (
     SAVINGS_ACCOUNT_PLAYBOOK,
     SAVINGS_ACCOUNT_TOOL_NAMES,
@@ -27,6 +31,10 @@ PLAYBOOK_REGISTRY: dict[str, tuple[str, frozenset[str]]] = {
     "life_premium_recovery": (
         LIFE_INSURANCE_COLLECTIONS_PLAYBOOK,
         LIFE_INSURANCE_COLLECTIONS_TOOL_NAMES,
+    ),
+    "vehicle_insurance_renewal": (
+        VEHICLE_INSURANCE_RENEWAL_PLAYBOOK,
+        VEHICLE_INSURANCE_RENEWAL_TOOL_NAMES,
     ),
     "home_loan": (HOME_LOAN_PLAYBOOK, HOME_LOAN_TOOL_NAMES),
     "vehicle_loan": (VEHICLE_LOAN_PLAYBOOK, VEHICLE_LOAN_TOOL_NAMES),
