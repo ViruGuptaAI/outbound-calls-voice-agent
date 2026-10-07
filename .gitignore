@@ -43,3 +43,6 @@ server/crm.db
 # ─── Generated escalation / hand-off artifacts (runtime) ─────────────────────
 server/outbox/
 server/escalations/
+
+# ─── Confidential eval harness (contains older customer system message) — never publish ─
+Agent_Evals/

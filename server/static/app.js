@@ -7,6 +7,9 @@ let isPlaying = false;
 let audioQueue = [];
 let callTimer = null;
 let callStart = null;
+let callAccepted = false;
+let callEndedMessageShown = false;
+let endCallTimer = null;
 
 const SAMPLE_RATE = 24000;
 const BUFFER_SIZE = 4096;
@@ -78,6 +81,8 @@ function animateVisualizer(active) {
 async function startConversation() {
     document.getElementById('btn-start').disabled = true;
     document.getElementById('btn-stop').disabled = false;
+    callAccepted = false;
+    callEndedMessageShown = false;
 
     // Clear messages
     const messagesEl = document.getElementById('messages');
@@ -130,20 +135,18 @@ async function startConversation() {
 
     // WebSocket connection
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${location.host}/web/ws`);
-    ws.binaryType = 'arraybuffer';
+    const socket = new WebSocket(`${protocol}//${location.host}/web/ws`);
+    ws = socket;
+    socket.binaryType = 'arraybuffer';
 
-    ws.onopen = () => {
+    socket.onopen = () => {
         // Send campaign + customer selection (tone + languages) as the first message
-        ws.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID, tone: CALL_TONE, languages: CALL_LANGUAGES }));
-
-        updateStatus('connected');
-        addSystemMessage('✅ Call connected — the agent is on the line.');
-        callStart = Date.now();
-        callTimer = setInterval(updateDuration, 1000);
+        socket.send(JSON.stringify({ campaignId: CAMPAIGN_ID, customerId: CUSTOMER_ID, tone: CALL_TONE, languages: CALL_LANGUAGES }));
+        updateStatus('connecting');
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+        if (ws !== socket) return;
         if (event.data instanceof ArrayBuffer) {
             // Raw PCM16 audio from agent — play through worklet
             stopHoldMusic(); // Kill hold music if playing
@@ -159,28 +162,46 @@ async function startConversation() {
             // JSON control message
             try {
                 const msg = JSON.parse(event.data);
-                handleControlMessage(msg);
+                handleControlMessage(msg, socket);
             } catch (e) {
                 console.warn('Non-JSON text message:', event.data);
             }
         }
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+        if (ws !== socket) return;
         updateStatus('disconnected');
-        addSystemMessage('Call ended.');
-        cleanup();
+        if (callAccepted) showCallEnded();
+        cleanup(socket);
     };
 
-    ws.onerror = () => {
+    socket.onerror = () => {
+        if (ws !== socket) return;
         addSystemMessage('⚠️ Connection error.');
-        cleanup();
+        try { socket.close(); } catch (_) {}
+        cleanup(socket);
     };
 }
 
 // ── Handle control messages ──────────────────────────────────────
-function handleControlMessage(msg) {
+function handleControlMessage(msg, socket) {
     switch (msg.Kind) {
+        case 'CallStarted':
+            if (callAccepted) break;
+            callAccepted = true;
+            updateStatus('connected');
+            addSystemMessage('✅ Call connected — the agent is on the line.');
+            callStart = Date.now();
+            callTimer = setInterval(updateDuration, 1000);
+            break;
+
+        case 'CallRejected':
+            addSystemMessage('⚠️ ' + (msg.Message || 'The call could not be started.'));
+            try { socket.close(); } catch (_) {}
+            cleanup(socket);
+            break;
+
         case 'StopAudio':
             stopPlayback();
             break;
@@ -212,7 +233,7 @@ function handleControlMessage(msg) {
             break;
 
         case 'EndCall':
-            handleEndCall(msg.Reason, msg.GraceMs);
+            handleEndCall(msg.Reason, msg.GraceMs, socket);
             break;
 
         case 'Escalation':
@@ -476,6 +497,9 @@ function updateStatus(state) {
     if (state === 'connected') {
         el.textContent = 'Connected';
         el.className = 'status-value connected';
+    } else if (state === 'connecting') {
+        el.textContent = 'Connecting';
+        el.className = 'status-value';
     } else {
         el.textContent = 'Disconnected';
         el.className = 'status-value disconnected';
@@ -493,13 +517,15 @@ function updateDuration() {
 
 // ── Stop / cleanup ───────────────────────────────────────────────
 function stopConversation() {
-    if (ws) ws.close();
-    cleanup();
-    addSystemMessage('Call ended by user.');
+    const socket = ws;
+    if (socket) socket.close();
+    cleanup(socket);
+    showCallEnded('Call ended by user.');
 }
 
 // ── Server-initiated graceful end (agent hung up / idle timeout) ──
-function handleEndCall(reason, graceMs) {    addSystemMessage('📞 ' + (reason || 'Ending the call…'));
+function handleEndCall(reason, graceMs, socket) {
+    addSystemMessage('📞 ' + (reason || 'Ending the call…'));
     // Stop capturing and sending mic audio immediately so we don't keep the
     // line open, but keep the audio context alive so the agent's farewell
     // finishes playing before we tear everything down.
@@ -509,10 +535,11 @@ function handleEndCall(reason, graceMs) {    addSystemMessage('📞 ' + (reason 
         mediaStream = null;
     }
     const grace = Math.max(500, Math.min(graceMs || 4000, 15000));
-    setTimeout(() => {
-        if (ws) { try { ws.close(); } catch (_) {} }
-        cleanup();
-        addSystemMessage('Call ended.');
+    if (endCallTimer) clearTimeout(endCallTimer);
+    endCallTimer = setTimeout(() => {
+        try { socket.close(); } catch (_) {}
+        cleanup(socket);
+        showCallEnded();
     }, grace);
 }
 
@@ -533,12 +560,20 @@ function addEscalationBanner(ticket, priority, type, emailTo) {
     appendMessage(el);
 }
 
-function cleanup() {
+function showCallEnded(message = 'Call ended.') {
+    if (callEndedMessageShown) return;
+    callEndedMessageShown = true;
+    addSystemMessage(message);
+}
+
+function cleanup(socket = ws) {
+    if (socket && ws && socket !== ws) return;
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-stop').disabled = true;
     updateStatus('disconnected');
 
     stopAmbient();
+    if (endCallTimer) { clearTimeout(endCallTimer); endCallTimer = null; }
     if (callTimer) { clearInterval(callTimer); callTimer = null; }
     if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
     if (mediaStream) {

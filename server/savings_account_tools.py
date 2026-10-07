@@ -116,7 +116,7 @@ _NEXT_ACTION = {
     ),
     "PIN_CONFIRMATION": (
         "Read captured_pin_readback digit by digit and ask for confirmation. Never display the raw six-digit sequence or speak PIN code as one number. "
-        "After confirmation, submit CONFIRMED before calling validate_pin_code."
+        "On the customer's explicit confirmation, submit CONFIRMED; the backend then advances on its own."
     ),
     "AGE_CHECK": "Ask whether the customer is at least eighteen years old.",
     "RESIDENCY_CHECK": "Ask whether the customer is an Indian resident.",
@@ -155,12 +155,15 @@ _NEXT_ACTION = {
 # self-advancing state the model must submit PRESENTED to leave (which it kept forgetting, causing
 # the disclosure to repeat every turn).
 _AFTER_CONFIRM_ACTION = (
-    "First, briefly deliver the approved KYC preparation ONCE: keep the original PAN and Aadhaar "
-    "(with the Aadhaar-linked mobile) ready, and never share an OTP, PIN, password, CVV, full PAN "
-    "or full Aadhaar on this call. Then, in the SAME turn, ask the single final question "
-    "'क्या आपका कोई और सवाल है?' (do you have any other question?). Do not ask permission to proceed, "
-    "never say 'क्या मैं आगे बढ़ाउँ?', do not ask again whether documents are available, and never "
-    "repeat the KYC list on a later turn."
+    "First, in your own warm words, deliver this closing note ONCE: our KYC team will call them "
+    "shortly to complete the KYC and open the account, so they should keep their original Aadhaar and "
+    "PAN ready; and gently remind them never to share an OTP, PIN, password, CVV, full PAN or full "
+    "Aadhaar number on any call. A natural phrasing is 'जल्द ही हमारी KYC team आपको call करके "
+    "account-opening पूरा करेगी — तब तक आप अपना original Aadhaar और PAN तैयार रखिए। और ध्यान रहे, किसी "
+    "भी call पर अपना OTP, PIN, password, CVV, पूरा PAN या पूरा Aadhaar number किसी से share न करें।'. "
+    "Then, in the SAME turn, ask the single final question 'क्या आपका कोई और सवाल है?' (do you have any "
+    "other question?). Do not ask permission to proceed, never say 'क्या मैं आगे बढ़ाउँ?', do not ask "
+    "again whether documents are available, and never repeat this note on a later turn."
 )
 
 _ALLOWED_STEP_RESULTS = {
@@ -603,7 +606,10 @@ def _transition_for(state: str, result: str) -> tuple[str, str] | None:
             "CAPTURED": ("PIN_CONFIRMATION", _NEXT_ACTION["PIN_CONFIRMATION"]),
         },
         "PIN_CONFIRMATION": {
-            "CONFIRMED": ("PIN_CONFIRMATION", "Call validate_pin_code with the confirmed captured PIN."),
+            # Serviceability is decided inline in submit_step_result once the customer
+            # confirms the read-back, so CONFIRMED advances straight to AGE_CHECK by
+            # default (a non-serviceable PIN is overridden there to a decline).
+            "CONFIRMED": ("AGE_CHECK", _NEXT_ACTION["AGE_CHECK"]),
             "CORRECTED": ("PIN_CAPTURE", _NEXT_ACTION["PIN_CAPTURE"]),
         },
         "AGE_CHECK": {
@@ -631,6 +637,23 @@ def _transition_for(state: str, result: str) -> tuple[str, str] | None:
         },
     }
     return transitions.get(state, {}).get(result)
+
+
+def _pin_serviceable(db: sqlite3.Connection, captured_pin: str | None) -> bool:
+    """Return whether the confirmed postal PIN is serviceable.
+
+    Demo rule (single source of truth for serviceability): any well-formed
+    six-digit PIN is serviceable unless it is an explicit deny-list entry
+    (serviceable = 0) in serviceable_pin_codes.
+    """
+    normalized = re.sub(r"\D", "", captured_pin or "")
+    if len(normalized) != 6:
+        return False
+    row = db.execute(
+        "SELECT serviceable FROM serviceable_pin_codes WHERE pin_code = ?",
+        (normalized,),
+    ).fetchone()
+    return not (row is not None and not row["serviceable"])
 
 
 def submit_step_result(
@@ -692,6 +715,18 @@ def submit_step_result(
                 db.commit()
                 return {"status": "REJECTED", "current_state": stored_state, "recovery_action": "Ask for all six postal PIN digits again."}
             updates["captured_pin"] = pin_code
+        elif stored_state == "PIN_CONFIRMATION" and submitted_result == "CONFIRMED":
+            # Serviceability now runs inline the moment the customer confirms the
+            # read-back, so the model performs a single action (submit CONFIRMED)
+            # and the backend advances or declines. This removes the separate
+            # validate_pin_code round-trip that previously caused a re-confirm loop.
+            if _pin_serviceable(db, session["captured_pin"]):
+                updates["pin_validation_status"] = "SERVICEABLE"
+            else:
+                next_state = "PIN_CONFIRMATION"
+                next_action = "Call finalize_call with outcome NOT_ELIGIBLE_PIN."
+                updates["call_state"] = "PIN_CONFIRMATION"
+                updates["pin_validation_status"] = "NOT_SERVICEABLE"
         elif stored_state == "PIN_CONFIRMATION" and submitted_result == "CORRECTED":
             updates["captured_pin"] = None
         elif stored_state == "PRODUCT_SELECTION" and submitted_result == "SELECTED":

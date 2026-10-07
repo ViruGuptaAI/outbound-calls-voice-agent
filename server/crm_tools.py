@@ -2023,6 +2023,408 @@ def get_premium_negotiation(
     }
 
 
+# ─── Vehicle Insurance Renewal ───────────────────────────────────────────────
+
+_VEHICLE_INSURANCE_FAQ = {
+    "coverage": {
+        "answer": "Comprehensive cover includes own-damage protection for the insured vehicle plus mandatory third-party liability. Third-party-only cover does not pay for damage to the insured vehicle. Standalone own-damage requires a separate active third-party policy.",
+        "customer_check": "Ask whether protecting damage to their own vehicle is important before changing from comprehensive cover.",
+    },
+    "ncb": {
+        "answer": "No Claim Bonus is a discount on the own-damage premium for claim-free experience. It does not discount the third-party premium. Claims and policy history can change the NCB available at renewal.",
+        "customer_check": "Use the customer-bound policy result for their actual NCB; never infer it.",
+    },
+    "idv": {
+        "answer": "IDV is the insured value used as the basis for theft or total-loss settlement, subject to policy terms and deductions. It is not the vehicle's resale price and is not a guaranteed payout for every claim.",
+        "customer_check": "Explain any material IDV change before the customer accepts a quote.",
+    },
+    "add_ons": {
+        "answer": "Available demo add-ons are zero depreciation, roadside assistance, engine protection, return to invoice and NCB protection. Zero depreciation reduces depreciation deductions on eligible replaced parts; it does not make every repair fully payable, remove deductibles or guarantee a claim. Eligibility and claim payment remain subject to the issued policy wording.",
+        "customer_check": "Recommend only add-ons relevant to the vehicle and customer; do not bundle them silently.",
+    },
+    "claims": {
+        "answer": "Renewal does not guarantee approval of a future claim. Each claim is assessed against the issued policy, incident facts, exclusions, deductibles and required documents.",
+        "customer_check": "Escalate a disputed or unresolved claim; do not adjudicate it on the renewal call.",
+    },
+    "deductible": {
+        "answer": "The deductible is the portion of an admissible own-damage claim paid by the policyholder before the insurer's share. The policy lookup returns the applicable compulsory and voluntary deductible for this policy.",
+        "customer_check": "Do not describe a lower premium from a voluntary deductible without explaining the higher claim-time contribution.",
+    },
+    "exclusions": {
+        "answer": "Typical material exclusions include driving without a valid licence, use outside policy terms, consequential loss, wear and tear, mechanical breakdown, intoxicated driving and pre-existing damage. The issued policy wording is authoritative.",
+        "customer_check": "Never say the policy covers every loss or guarantee claim approval.",
+    },
+    "inspection": {
+        "answer": "An on-time renewal normally avoids a break-in inspection. If cover has expired, or material vehicle/policy details change, photographs or physical inspection and insurer approval may be required before own-damage cover starts.",
+        "customer_check": "Escalate expired-policy or material-change cases for confirmation; never promise inspection waiver.",
+    },
+    "documents": {
+        "answer": "A normal unchanged renewal generally uses the existing policy and vehicle record. Registration certificate, prior policy, identity/address details or inspection evidence may be requested when details change or cover has expired.",
+        "customer_check": "Never request full identity numbers or credentials on the call.",
+    },
+    "payment": {
+        "answer": "A renewal intent or payment link does not activate cover. Renewal completes only after successful payment, proposal validation and issuance of the new policy document.",
+        "customer_check": "Confirm the amount and channel before sending a link; never request OTP, PIN or CVV.",
+    },
+    "break_in": {
+        "answer": "A break between expiry and renewal can leave the vehicle without the expired policy's protection. New own-damage cover may require inspection and starts only from the date/time shown on the newly issued policy; it is not backdated.",
+        "customer_check": "Do not claim uninterrupted cover after expiry unless the issued policy confirms it.",
+    },
+}
+
+_VEHICLE_ADD_ON_RATES = {
+    "zero_depreciation": (0.0045, 0),
+    "roadside_assistance": (0, 499),
+    "engine_protection": (0.0020, 0),
+    "return_to_invoice": (0.0030, 0),
+    "ncb_protection": (0.0015, 0),
+}
+
+_VEHICLE_NCB_LADDER = {0: 20, 20: 25, 25: 35, 35: 45, 45: 50, 50: 50}
+
+
+def _renewal_ncb(current_ncb: float, claims_last_year: int) -> tuple[float, str]:
+    """Apply the standard private-car NCB progression used by this demo insurer."""
+    current = int(max(0, min(current_ncb, 50)))
+    if claims_last_year:
+        return 0.0, "NCB reset to 0% because the record shows a claim in the expiring policy period."
+    next_ncb = _VEHICLE_NCB_LADDER.get(current, current)
+    return float(next_ncb), (
+        f"Claim-free renewal progression from {current}% to {next_ncb}%, applied only to own damage."
+    )
+
+
+def get_vehicle_insurance_policy(customer_id: str) -> dict:
+    """Return the customer's active/renewal-due motor policy with masked references."""
+    row = _query_one(
+        "SELECT * FROM vehicle_insurance_policies WHERE customer_id = ? "
+        "AND renewal_status IN ('Due Soon','Overdue') ORDER BY expiry_date LIMIT 1",
+        (customer_id,),
+    )
+    if not row:
+        return {"error": "No vehicle insurance policy due for renewal was found for this customer."}
+
+    import datetime
+    import json
+
+    expiry = datetime.date.fromisoformat(row["expiry_date"])
+    days_until_expiry = (expiry - datetime.date.today()).days
+    add_ons = json.loads(row.get("add_ons_json") or "[]")
+    return {
+        "status": "FOUND",
+        "policy_reference": f"…{str(row['policy_number'])[-6:]}",
+        "vehicle": row["vehicle_make_model"],
+        "registration_reference": f"…{str(row['registration_number'])[-4:]}",
+        "registration_year": row["registration_year"],
+        "engine_cc": row["engine_cc"],
+        "fuel_type": row["fuel_type"],
+        "coverage_type": row["coverage_type"],
+        "policy_start_date": row["policy_start_date"],
+        "expiry_date": row["expiry_date"],
+        "days_until_expiry": days_until_expiry,
+        "renewal_status": "Expired" if days_until_expiry < 0 else row["renewal_status"],
+        "idv": row["idv"],
+        "proposed_renewal_idv": row["renewal_idv"],
+        "renewal_idv_basis": row["renewal_idv_basis"],
+        "pricing_zone": row["pricing_zone"],
+        "last_total_premium": row["last_total_premium"],
+        "ncb_pct": row["ncb_pct"],
+        "claims_last_year": row["claims_last_year"],
+        "compulsory_deductible": row["compulsory_deductible"],
+        "voluntary_deductible": row["voluntary_deductible"],
+        "existing_add_ons": add_ons,
+        "note": "Customer-specific policy facts. Do not expose unmasked references or claim that renewal is complete.",
+    }
+
+
+def get_vehicle_insurance_information(topic: str) -> dict:
+    """Return an approved, versioned renewal FAQ answer."""
+    key = str(topic).strip().lower()
+    info = _VEHICLE_INSURANCE_FAQ.get(key)
+    if not info:
+        return {"error": "Unsupported vehicle-insurance information topic."}
+    return {"status": "FOUND", "topic": key, "version": "2026-09-02.demo.1", **info}
+
+
+def get_vehicle_renewal_quote(
+    customer_id: str,
+    coverage_type: str,
+    add_ons: list[str] | None = None,
+) -> dict:
+    """Calculate a bounded indicative motor-renewal quote from stored policy facts."""
+    import datetime
+    import hashlib
+    import json
+
+    policy = _query_one(
+        "SELECT * FROM vehicle_insurance_policies WHERE customer_id = ? "
+        "AND renewal_status IN ('Due Soon','Overdue') ORDER BY expiry_date LIMIT 1",
+        (customer_id,),
+    )
+    if not policy:
+        return {"error": "No vehicle insurance policy due for renewal was found for this customer."}
+
+    coverage = str(coverage_type).strip().lower()
+    if coverage not in {"comprehensive", "third_party", "standalone_own_damage"}:
+        return {"error": "Unsupported coverage type."}
+    selected_add_ons = list(dict.fromkeys(add_ons or []))
+    invalid_add_ons = [item for item in selected_add_ons if item not in _VEHICLE_ADD_ON_RATES]
+    if invalid_add_ons:
+        return {"error": f"Unsupported add-ons: {', '.join(invalid_add_ons)}"}
+    if coverage == "third_party" and selected_add_ons:
+        return {"error": "Own-damage add-ons cannot be attached to a third-party-only quote."}
+    if coverage == "standalone_own_damage" and not policy.get("third_party_valid_until"):
+        return {"error": "Standalone own-damage requires an active third-party policy."}
+
+    current_idv = float(policy["idv"])
+    renewal_idv = float(policy["renewal_idv"])
+    previous_od_rate = float(policy["previous_od_rate"])
+    renewal_od_rate = float(policy["renewal_od_rate"])
+    current_ncb_pct = max(0.0, min(float(policy["ncb_pct"]), 50.0))
+    renewal_ncb_pct, ncb_basis = _renewal_ncb(
+        current_ncb_pct, int(policy["claims_last_year"])
+    )
+    base_own_damage = renewal_idv * renewal_od_rate
+    ncb_discount = base_own_damage * renewal_ncb_pct / 100
+    own_damage_after_ncb = base_own_damage - ncb_discount
+    add_on_amounts = {
+        name: round(
+            renewal_idv * _VEHICLE_ADD_ON_RATES[name][0]
+            + _VEHICLE_ADD_ON_RATES[name][1]
+        )
+        for name in selected_add_ons
+    }
+    own_damage = own_damage_after_ncb if coverage in {"comprehensive", "standalone_own_damage"} else 0
+    tp_component = (
+        float(policy["renewal_tp_premium"])
+        if coverage in {"comprehensive", "third_party"}
+        else 0
+    )
+    subtotal = own_damage + tp_component + sum(add_on_amounts.values())
+    tax = round(subtotal * 0.18)
+    total = int(round((subtotal + tax) / 10.0) * 10)
+    previous_add_ons = json.loads(policy.get("previous_add_ons_breakdown_json") or "{}")
+    previous_base_od = float(policy["previous_own_damage_base"])
+    previous_ncb_discount = float(policy["previous_ncb_discount"])
+    previous_net_od = previous_base_od - previous_ncb_discount
+    previous_tp = float(policy["previous_tp_premium"])
+    previous_tax = float(policy["previous_tax"])
+    previous_total = int(round(float(policy["last_total_premium"])))
+    previous_rounded_components = (
+        round(previous_net_od)
+        + round(previous_tp)
+        + round(sum(previous_add_ons.values()))
+        + round(previous_tax)
+    )
+    renewal_rounded_components = (
+        round(own_damage)
+        + round(tp_component)
+        + round(sum(add_on_amounts.values()))
+        + tax
+    )
+    premium_difference = total - previous_total
+    premium_difference_pct = round(
+        premium_difference / previous_total * 100, 1
+    ) if previous_total else None
+    quote_basis = json.dumps(
+        [policy["policy_number"], coverage, selected_add_ons, total],
+        separators=(",", ":"),
+    )
+    quote_reference = "VIQ-" + hashlib.sha256(quote_basis.encode()).hexdigest()[:10].upper()
+
+    return {
+        "status": "QUOTED",
+        "quote_reference": quote_reference,
+        "vehicle": policy["vehicle_make_model"],
+        "coverage_type": coverage,
+        "idv": round(renewal_idv),
+        "idv_comparison": {
+            "expiring_policy_idv": round(current_idv),
+            "renewal_idv": round(renewal_idv),
+            "difference_amount": round(renewal_idv - current_idv),
+            "basis": policy["renewal_idv_basis"],
+        },
+        "ncb_pct_applied_to_own_damage": renewal_ncb_pct if own_damage else 0,
+        "ncb_comparison": {
+            "expiring_policy_ncb_pct": current_ncb_pct,
+            "renewal_ncb_pct": renewal_ncb_pct if own_damage else 0,
+            "claims_in_expiring_period": int(policy["claims_last_year"]),
+            "basis": ncb_basis,
+        },
+        "gross_own_damage_premium": round(base_own_damage),
+        "ncb_discount_amount": round(ncb_discount),
+        "own_damage_premium": round(own_damage),
+        "third_party_premium": round(tp_component),
+        "add_ons": add_on_amounts,
+        "tax": tax,
+        "total_premium": total,
+        "premium_comparison": {
+            "previous_total_premium": previous_total,
+            "renewal_total_premium": total,
+            "difference_amount": premium_difference,
+            "difference_percentage": premium_difference_pct,
+            "direction": (
+                "higher" if premium_difference > 0
+                else "lower" if premium_difference < 0
+                else "unchanged"
+            ),
+            "same_coverage_as_existing": coverage == policy["coverage_type"],
+            "same_add_ons_as_existing": selected_add_ons == json.loads(
+                policy.get("add_ons_json") or "[]"
+            ),
+            "explanation_status": "AUDITABLE_COMPONENT_BREAKDOWN",
+            "previous_breakdown": {
+                "idv": round(current_idv),
+                "od_rate_pct": round(previous_od_rate * 100, 3),
+                "gross_own_damage": round(previous_base_od),
+                "ncb_pct": current_ncb_pct,
+                "ncb_discount": round(previous_ncb_discount),
+                "net_own_damage": round(previous_net_od),
+                "third_party": round(previous_tp),
+                "add_ons": previous_add_ons,
+                "tax": round(previous_tax),
+                "rounding_adjustment": previous_total - previous_rounded_components,
+                "total": previous_total,
+            },
+            "renewal_breakdown": {
+                "idv": round(renewal_idv),
+                "od_rate_pct": round(renewal_od_rate * 100, 3),
+                "gross_own_damage": round(base_own_damage),
+                "ncb_pct": renewal_ncb_pct if own_damage else 0,
+                "ncb_discount": round(ncb_discount if own_damage else 0),
+                "net_own_damage": round(own_damage),
+                "third_party": round(tp_component),
+                "add_ons": add_on_amounts,
+                "tax": tax,
+                "rounding_adjustment": total - renewal_rounded_components,
+                "total": total,
+            },
+            "explanation_factors": [
+                {
+                    "factor": "IDV",
+                    "before": round(current_idv),
+                    "after": round(renewal_idv),
+                    "premium_effect": round((renewal_idv - current_idv) * previous_od_rate),
+                },
+                {
+                    "factor": "Own-damage rate",
+                    "before_pct": round(previous_od_rate * 100, 3),
+                    "after_pct": round(renewal_od_rate * 100, 3),
+                    "premium_effect": round(renewal_idv * (renewal_od_rate - previous_od_rate)),
+                },
+                {
+                    "factor": "NCB discount",
+                    "before_pct": current_ncb_pct,
+                    "after_pct": renewal_ncb_pct if own_damage else 0,
+                    "premium_effect": round(previous_ncb_discount - (ncb_discount if own_damage else 0)),
+                },
+                {
+                    "factor": "Third-party tariff",
+                    "before": round(previous_tp),
+                    "after": round(tp_component),
+                    "premium_effect": round(tp_component - previous_tp),
+                },
+                {
+                    "factor": "Add-ons",
+                    "before": round(sum(previous_add_ons.values())),
+                    "after": round(sum(add_on_amounts.values())),
+                    "premium_effect": round(sum(add_on_amounts.values()) - sum(previous_add_ons.values())),
+                },
+                {
+                    "factor": "Tax",
+                    "before": round(previous_tax),
+                    "after": tax,
+                    "premium_effect": round(tax - previous_tax),
+                },
+                {
+                    "factor": "Rounding",
+                    "before": previous_total - previous_rounded_components,
+                    "after": total - renewal_rounded_components,
+                    "premium_effect": (
+                        total - renewal_rounded_components
+                        - (previous_total - previous_rounded_components)
+                    ),
+                },
+            ],
+        },
+        "valid_until": min(
+            datetime.date.today() + datetime.timedelta(days=7),
+            datetime.date.fromisoformat(policy["expiry_date"]),
+        ).isoformat(),
+        "quote_status": "INDICATIVE",
+        "material_note": (
+            "Third-party-only cover does not protect damage to the customer's own vehicle."
+            if coverage == "third_party"
+            else "Final premium and cover begin only after proposal validation, payment and policy issuance."
+        ),
+        "pricing_zone": policy["pricing_zone"],
+        "rate_card_version": policy["rate_card_version"],
+    }
+
+
+def record_vehicle_renewal_intent(
+    customer_id: str,
+    coverage_type: str,
+    add_ons: list[str] | None,
+    preferred_payment_date: str,
+    payment_mode: str,
+) -> dict:
+    """Persist a renewal intent using a freshly recalculated, non-model-authored amount."""
+    import datetime
+    import json
+    import random
+
+    quote = get_vehicle_renewal_quote(customer_id, coverage_type, add_ons)
+    if quote.get("error"):
+        return quote
+    try:
+        intended_date = datetime.date.fromisoformat(str(preferred_payment_date))
+    except ValueError:
+        return {"error": "A specific payment date in YYYY-MM-DD format is required."}
+    if intended_date < datetime.date.today():
+        return {"error": "The intended payment date cannot be in the past."}
+    allowed_modes = {"payment_link", "UPI", "net_banking", "card", "branch"}
+    if payment_mode not in allowed_modes:
+        return {"error": "Unsupported payment mode."}
+
+    reference = "VIR-" + datetime.date.today().strftime("%Y%m%d") + "-" + str(random.randint(1000, 9999))
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute(
+            "INSERT INTO vehicle_insurance_renewal_intents "
+            "(customer_id,quote_reference,coverage_type,add_ons_json,premium_amount,"
+            "preferred_payment_date,payment_mode,status,reference,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                customer_id,
+                quote["quote_reference"],
+                quote["coverage_type"],
+                json.dumps(add_ons or []),
+                quote["total_premium"],
+                intended_date.isoformat(),
+                payment_mode,
+                "Intent Recorded",
+                reference,
+                datetime.datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "status": "RECORDED",
+        "reference": reference,
+        "quote_reference": quote["quote_reference"],
+        "coverage_type": quote["coverage_type"],
+        "add_ons": list(add_ons or []),
+        "premium_amount": quote["total_premium"],
+        "preferred_payment_date": intended_date.isoformat(),
+        "payment_mode": payment_mode,
+        "policy_status": "NOT_ISSUED",
+        "next_step": "Complete payment and proposal validation; confirm issuance of the renewed policy document.",
+    }
+
+
 
 # ─── Function dispatch map ────────────────────────────────────────────────────
 
@@ -2067,6 +2469,11 @@ TOOL_FUNCTIONS = {
     "get_cover_recommendation": get_cover_recommendation,
     "calculate_insurance_premium": calculate_insurance_premium,
     "get_premium_negotiation": get_premium_negotiation,
+    # Vehicle insurance renewal
+    "get_vehicle_insurance_policy": get_vehicle_insurance_policy,
+    "get_vehicle_insurance_information": get_vehicle_insurance_information,
+    "get_vehicle_renewal_quote": get_vehicle_renewal_quote,
+    "record_vehicle_renewal_intent": record_vehicle_renewal_intent,
     # Savings
     "get_account_details": get_account_details,
     "get_fixed_deposits": get_fixed_deposits,

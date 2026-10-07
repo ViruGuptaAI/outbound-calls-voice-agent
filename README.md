@@ -20,6 +20,10 @@ single WebSocket).
 | 🚗 Vehicle Loan Sales | **Kavya** | Pitch a pre-approved car loan with quick disbursal and drive to an application. |
 | 💳 Credit Card Collections | **Neha** | Recover an overdue payment and secure a promise-to-pay, respectfully and RBI-compliant. |
 | 🏦 Incomplete Savings Account | **Asha** | Resume an incomplete FinServe Instant application and prepare an eligible, consenting customer for KYC. |
+| 🛡️ Life Insurance Sales | **Ananya** | Assess a family's protection gap and arrange the right life-cover follow-up. |
+| 🛟 Life Premium Recovery | **Anjali** | Help an existing policyholder keep or revive their life cover. |
+| 🚙 Vehicle Loan Collections | **Meera** | Regularise overdue vehicle-loan EMIs through an authorised payment path. |
+| 🛡️ Vehicle Insurance Renewal | **Nisha** | Renew a near-expiry motor policy and answer policy-renewal questions. |
 
 Each agent has its own persona, voice, system prompt, tool set, and a
 step-by-step **playbook** that shapes the call flow.
@@ -61,7 +65,7 @@ Azure Voice Live API  ──►  GPT-4.1-mini + Azure Speech STT + Dragon HD TTS
   each campaign is allowed to use.
 - **`server/crm_tools.py`** — CRM/business functions exposed to the LLM
   (customer profile, offers, EMI calc, eligibility, collections dues,
-  promise-to-pay, payment links, etc.).
+  promise-to-pay, vehicle-insurance policy/quote/renewal intent, payment links, etc.).
 - **`server/savings_account_tools.py`** — backend-owned savings workflow,
   product snapshot, consent state, callbacks, DNC, escalation, and idempotent
   final disposition.

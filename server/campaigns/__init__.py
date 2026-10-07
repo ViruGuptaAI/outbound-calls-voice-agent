@@ -18,6 +18,10 @@ from .life_insurance_collections_agent import (
     LIFE_INSURANCE_COLLECTIONS_PROMPT,
     LIFE_INSURANCE_COLLECTIONS_TOOLS,
 )
+from .vehicle_insurance_renewal_agent import (
+    VEHICLE_INSURANCE_RENEWAL_PROMPT,
+    VEHICLE_INSURANCE_RENEWAL_TOOLS,
+)
 from .savings_account_sales_agent import (
     SAVINGS_ACCOUNT_SALES_PROMPT,
     SAVINGS_ACCOUNT_SALES_TOOLS,
@@ -28,7 +32,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": SAVINGS_ACCOUNT_SALES_PROMPT,
         "agent_name": "Asha",
         "name": "Asha (Savings Account Assistant)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": SAVINGS_ACCOUNT_SALES_TOOLS,
         "company": "Contoso Bank",
         "title": "Incomplete Savings Account",
@@ -43,7 +47,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": LIFE_INSURANCE_PROMPT,
         "agent_name": "Ananya",
         "name": "Ananya (Life Insurance Advisor)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": LIFE_INSURANCE_TOOLS,
         # This campaign is a life insurer, not the bank — override the opening brand.
         "company": "Contoso Life",
@@ -72,7 +76,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": LIFE_INSURANCE_COLLECTIONS_PROMPT,
         "agent_name": "Anjali",
         "name": "Anjali (Policy Servicing Officer)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": LIFE_INSURANCE_COLLECTIONS_TOOLS,
         "company": "Contoso Life",
         "title": "Life Insurance Premium Recovery",
@@ -89,11 +93,43 @@ CAMPAIGN_REGISTRY = {
             "sharing any policy details."
         ),
     },
+    "vehicle_insurance_renewal": {
+        "prompt": VEHICLE_INSURANCE_RENEWAL_PROMPT,
+        "agent_name": "Nisha",
+        "name": "Nisha (Vehicle Insurance Renewal Specialist)",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
+        "tools": VEHICLE_INSURANCE_RENEWAL_TOOLS,
+        "company": "Contoso Bank",
+        "title": "Vehicle Insurance Renewal",
+        "description": "Help customers renew a near-expiry motor policy and answer vehicle-insurance renewal questions.",
+        "icon": "🛡️",
+        "color": "#2563eb",
+        "audience": "vehicle_policy_expiring",
+        "opening_purpose": (
+            "You are calling with a service reminder that their Contoso Bank vehicle-insurance "
+            "policy is nearing renewal. Do not reveal the vehicle, policy, expiry date, premium "
+            "or claims until they confirm they are the intended customer."
+        ),
+        "opening_ask": (
+            "Ask them to confirm their first name, then ask permission to spend two minutes "
+            "reviewing the renewal and any policy questions they have."
+        ),
+        "opening_scripts": {
+            "hindi": (
+                "नमस्ते, क्या मैं {first_name} से बात कर रही हूँ? मैं Nisha बोल रही हूँ Contoso Bank से, "
+                "आपकी car insurance renewal के बारे में छोटा-सा reminder था।"
+            ),
+            "english": (
+                "Hi, am I speaking with {first_name}? This is Nisha from Contoso Bank, calling with "
+                "a quick reminder about your car-insurance renewal."
+            ),
+        },
+    },
     "home_loan": {
         "prompt": HOME_LOAN_PROMPT,
         "agent_name": "Priya",
         "name": "Priya (Home Loan Advisor)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": HOME_LOAN_TOOLS,
         # UI card metadata
         "title": "Home Loan Sales",
@@ -111,7 +147,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": VEHICLE_LOAN_PROMPT,
         "agent_name": "Kavya",
         "name": "Kavya (Vehicle Loan Advisor)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": VEHICLE_LOAN_TOOLS,
         "title": "Vehicle Loan Sales",
         "description": "Pitch a pre-approved car loan with quick disbursal and drive to an application.",
@@ -130,7 +166,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": COLLECTIONS_PROMPT,
         "agent_name": "Neha",
         "name": "Neha (Collections Officer)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": COLLECTIONS_TOOLS,
         "title": "Credit Card Collections",
         "description": "Recover an overdue credit-card payment and secure a promise-to-pay, respectfully.",
@@ -147,7 +183,7 @@ CAMPAIGN_REGISTRY = {
         "prompt": VEHICLE_LOAN_COLLECTIONS_PROMPT,
         "agent_name": "Meera",
         "name": "Meera (Vehicle Loan Recovery Officer)",
-        "voice": "en-IN-Diya:DragonHDLatestNeural",
+        "voice": "en-IN-Diya:DragonHDV2.3.5Neural",
         "tools": VEHICLE_LOAN_COLLECTIONS_TOOLS,
         "title": "Vehicle Loan Collections",
         "description": "Recover an overdue vehicle-loan EMI and secure a promise-to-pay, respectfully.",

@@ -309,6 +309,56 @@ def create_schema(cur: sqlite3.Cursor):
         last_payment_amount REAL,
         status              TEXT     -- 'In Grace' or 'Lapsed'
     );
+
+    -- ─── Vehicle Insurance Policies (renewal campaign) ──────────────
+    CREATE TABLE IF NOT EXISTS vehicle_insurance_policies (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id           TEXT NOT NULL REFERENCES customers(id),
+        policy_number         TEXT NOT NULL UNIQUE,
+        vehicle_make_model    TEXT NOT NULL,
+        registration_number   TEXT NOT NULL,
+        registration_year     INTEGER,
+        engine_cc             INTEGER NOT NULL,
+        fuel_type             TEXT,
+        coverage_type         TEXT NOT NULL,
+        policy_start_date     TEXT NOT NULL,
+        expiry_date           TEXT NOT NULL,
+        third_party_valid_until TEXT,
+        idv                   REAL NOT NULL,
+        renewal_idv           REAL NOT NULL,
+        renewal_idv_basis     TEXT NOT NULL,
+        pricing_zone          TEXT NOT NULL,
+        last_total_premium    REAL NOT NULL,
+        ncb_pct               REAL DEFAULT 0,
+        claims_last_year      INTEGER DEFAULT 0,
+        previous_od_rate      REAL NOT NULL,
+        previous_own_damage_base REAL NOT NULL,
+        previous_ncb_discount REAL NOT NULL,
+        previous_tp_premium   REAL NOT NULL,
+        previous_add_ons_breakdown_json TEXT DEFAULT '{}',
+        previous_tax          REAL NOT NULL,
+        renewal_od_rate       REAL NOT NULL,
+        renewal_tp_premium    REAL NOT NULL,
+        rate_card_version     TEXT NOT NULL,
+        compulsory_deductible REAL DEFAULT 0,
+        voluntary_deductible  REAL DEFAULT 0,
+        add_ons_json          TEXT DEFAULT '[]',
+        renewal_status        TEXT DEFAULT 'Due Soon'
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicle_insurance_renewal_intents (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id            TEXT NOT NULL REFERENCES customers(id),
+        quote_reference        TEXT NOT NULL,
+        coverage_type          TEXT NOT NULL,
+        add_ons_json           TEXT DEFAULT '[]',
+        premium_amount         REAL NOT NULL,
+        preferred_payment_date TEXT NOT NULL,
+        payment_mode           TEXT NOT NULL,
+        status                 TEXT NOT NULL,
+        reference              TEXT NOT NULL UNIQUE,
+        created_at             TEXT NOT NULL
+    );
     """)
 
 
@@ -708,6 +758,48 @@ def seed_data(cur: sqlite3.Cursor):
         "accrued_benefit,last_payment_date,last_payment_amount,status) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         life_policies,
+    )
+
+    # ── Vehicle Insurance Policies (near-expiry renewal campaign) ──────
+    vehicle_insurance_policies = [
+        # customer, policy, vehicle, registration, year, cc, fuel, coverage,
+        # start, expiry, TP valid-until, current IDV, renewal IDV + basis, zone,
+        # last total, NCB, claims, prior rating components, renewal rates/version,
+        # compulsory deductible, voluntary deductible, add-ons JSON, status
+        ('amit', 'CVI-2025-10112', 'Maruti Suzuki Baleno', 'GJ-01-AB-4567',
+         2021, 1197, 'Petrol', 'comprehensive', '2025-09-13', '2026-09-12',
+         '2026-09-12', 520000, 450000, 'Agreed value because vehicle is over five years old',
+         'Ahmedabad Zone B', 15270, 25, 0,
+         0.0175, 9100, 2275, 3416, '{"zero_depreciation":2300,"roadside_assistance":400}',
+         2329, 0.0186, 3416, 'CONTOSO-MOTOR-2026.09', 1000, 0,
+         '["zero_depreciation","roadside_assistance"]', 'Due Soon'),
+        ('harshal', 'CVI-2025-55678', 'Hyundai Creta', 'MH-12-CD-8890',
+         2020, 1497, 'Diesel', 'comprehensive', '2025-09-21', '2026-09-20',
+         '2026-09-20', 850000, 750000, 'Agreed value because vehicle is over five years old',
+         'Pune Zone A', 22820, 0, 1,
+         0.0165, 14025, 0, 3416, '{"roadside_assistance":400,"engine_protection":1500}',
+         3479, 0.0178, 3416, 'CONTOSO-MOTOR-2026.09', 1000, 2500,
+         '["roadside_assistance","engine_protection"]', 'Due Soon'),
+        ('priya', 'CVI-2025-33910', 'Honda City', 'TS-09-EF-8734',
+         2022, 1498, 'Petrol', 'comprehensive', '2025-10-02', '2026-10-01',
+         '2026-10-01', 650000, 585000, 'Age-based depreciation from the current policy IDV',
+         'Hyderabad Zone B', 18240, 20, 0,
+         0.0178, 11570, 2314, 3416, '{"zero_depreciation":2385,"roadside_assistance":400}',
+         2783, 0.0186, 3416, 'CONTOSO-MOTOR-2026.09', 1000, 0,
+         '["zero_depreciation","roadside_assistance"]', 'Due Soon'),
+    ]
+    cur.executemany(
+        "INSERT INTO vehicle_insurance_policies "
+        "(customer_id,policy_number,vehicle_make_model,registration_number,"
+        "registration_year,engine_cc,fuel_type,coverage_type,policy_start_date,"
+        "expiry_date,third_party_valid_until,idv,renewal_idv,renewal_idv_basis,pricing_zone,"
+        "last_total_premium,ncb_pct,claims_last_year,previous_od_rate,"
+        "previous_own_damage_base,previous_ncb_discount,previous_tp_premium,"
+        "previous_add_ons_breakdown_json,previous_tax,renewal_od_rate,"
+        "renewal_tp_premium,rate_card_version,compulsory_deductible,"
+        "voluntary_deductible,add_ons_json,renewal_status) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        vehicle_insurance_policies,
     )
 
 

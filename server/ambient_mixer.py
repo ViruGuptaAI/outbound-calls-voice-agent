@@ -1,4 +1,5 @@
-"""Ambient noise — a looping background ambience played as a CONTINUOUS bed under the
+"""
+Ambient noise — a looping background ambience played as a CONTINUOUS bed under the
 agent's call so it sounds like a real person in a real room (a subtle office tone or a
 busier call-centre floor) for the whole call, not just while the agent is speaking.
 
@@ -48,7 +49,7 @@ class AmbientMixer:
     PRESETS = {
         "none": {"file": None, "texture": None},
         "office": {"file": "office.wav", "texture": "office"},
-        "call_center": {"file": "callcenter.wav", "texture": "call_center"},
+        "call_center": {"file": "CallCenter_AmbientNoise.wav", "texture": "call_center"},
     }
 
     def __init__(self, preset: str = "none", gain: float | None = None):
